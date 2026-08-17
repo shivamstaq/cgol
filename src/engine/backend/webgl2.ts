@@ -1,6 +1,7 @@
 import { BACKGROUND } from '../palette';
 import { getWebGL2Context, type Backend, type RenderCanvas } from './types';
 
+/** Surface-only until M3 brings the packed simulation to WebGL2. */
 export function createWebGL2Backend(canvas: RenderCanvas): Backend | null {
   const gl = getWebGL2Context(canvas, {
     alpha: false,
@@ -25,17 +26,28 @@ export function createWebGL2Backend(canvas: RenderCanvas): Backend | null {
   return {
     kind: 'webgl2',
     device: renderer || 'webgl2 context',
+    simulates: false,
 
-    resize(w, h) {
-      width = w;
-      height = h;
+    resizeSurface(nextWidth, nextHeight) {
+      width = nextWidth;
+      height = nextHeight;
     },
+
+    allocate() {},
+    setRule() {},
+    advance() {},
 
     render() {
       gl.viewport(0, 0, width, height);
       gl.clearColor(r, g, b, a);
       gl.clear(gl.COLOR_BUFFER_BIT);
     },
+
+    beginStroke() {},
+    stamp() {},
+    snapshotSeed() {},
+    restoreSeed() {},
+    clear() {},
 
     dispose() {
       gl.getExtension('WEBGL_lose_context')?.loseContext();

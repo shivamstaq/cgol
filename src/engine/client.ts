@@ -1,8 +1,10 @@
+import type { EngineCommand } from './dispatch';
+import { dispatch } from './dispatch';
 import type { BackendKind, EngineToMain, ViewportSpec } from './protocol';
 import type { Runtime } from './runtime';
 
 export interface EngineHandle {
-  setViewport(viewport: ViewportSpec): void;
+  send(command: EngineCommand): void;
   dispose(): void;
 }
 
@@ -27,17 +29,19 @@ function createWorkerEngine(
   onEvent: (event: EngineToMain) => void,
 ): EngineHandle {
   const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
-  worker.addEventListener('message', (event: MessageEvent<EngineToMain>) => onEvent(event.data));
-  worker.addEventListener('error', (event) =>
-    onEvent({ type: 'fatal', message: event.message || 'worker error' }),
-  );
+  worker.addEventListener('message', (event: MessageEvent<EngineToMain>) => {
+    onEvent(event.data);
+  });
+  worker.addEventListener('error', (event) => {
+    onEvent({ type: 'fatal', message: event.message || 'worker error' });
+  });
 
   const offscreen = canvas.transferControlToOffscreen();
   worker.postMessage({ type: 'init', canvas: offscreen, viewport, preferred }, [offscreen]);
 
   return {
-    setViewport(next) {
-      worker.postMessage({ type: 'viewport', viewport: next });
+    send(command) {
+      worker.postMessage(command);
     },
     dispose() {
       worker.postMessage({ type: 'dispose' });
@@ -53,15 +57,22 @@ function createInlineEngine(
   onEvent: (event: EngineToMain) => void,
 ): EngineHandle {
   let runtime: Runtime | null = null;
-  let pending = viewport;
   let disposed = false;
+  const queued: EngineCommand[] = [];
 
   const start = async () => {
     const { Runtime: RuntimeClass } = await import('./runtime');
     if (disposed) return;
-    runtime = new RuntimeClass(canvas, onEvent);
-    await runtime.init(pending, preferred);
-    if (disposed) runtime.dispose();
+
+    const instance = new RuntimeClass(canvas, onEvent);
+    await instance.init(viewport, preferred);
+    if (disposed) {
+      instance.dispose();
+      return;
+    }
+
+    runtime = instance;
+    for (const command of queued.splice(0)) dispatch(instance, command);
   };
 
   void start().catch((error: unknown) => {
@@ -69,9 +80,12 @@ function createInlineEngine(
   });
 
   return {
-    setViewport(next) {
-      pending = next;
-      runtime?.setViewport(next);
+    send(command) {
+      if (runtime) {
+        dispatch(runtime, command);
+      } else {
+        queued.push(command);
+      }
     },
     dispose() {
       disposed = true;

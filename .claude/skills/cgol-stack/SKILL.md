@@ -77,6 +77,22 @@ Verified 2026-08-17 against primary docs. Stack decisions live in `SPEC.md`; ver
 - Requires `permissions: { contents: read, pages: write, id-token: write }` and `concurrency: { group: pages }`.
 - Deploy branch for this project is `master`.
 
+## Packed state layout
+
+Both backends must match this layout exactly.
+
+- 1 bit per cell, 32 cells per `u32`. Bit `i` of word `w` is cell `x = w * 32 + i`.
+- Row stride `wordsPerRow = ceil(cols / 32)`; a ragged last word keeps its unused high bits zero,
+  enforced by a tail mask after every step.
+- Horizontal neighbours come from shifting the centre word and injecting one edge bit taken at
+  `firstX - 1` and `firstX + wordBits`, both taken modulo `cols` so wrap is exact for ragged rows.
+- Neighbour counts use SWAR full-adders: `sum3` over each row triple, then combine into count bit
+  planes `b0..b3`.
+- Rules are two 9-bit masks; bit `k` means neighbour count `k`. Conway is `birth = 1 << 3`,
+  `survive = (1 << 2) | (1 << 3)`.
+- XOR strokes need three buffers: state, a stroke base copied at pointer-down, and an accumulating
+  mask; state is rewritten as `base ^ mask`.
+
 ## Project conventions
 
 - Comments and docs: minimal, utilitarian, fact-based. No explanatory prose, no incident notes.

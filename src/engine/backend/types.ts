@@ -1,13 +1,47 @@
-import type { BackendKind } from '../protocol';
+import type { BackendKind, RuleSpec } from '../protocol';
 
 export type RenderCanvas = HTMLCanvasElement | OffscreenCanvas;
+
+export interface GridSpec {
+  cols: number;
+  rows: number;
+  /** Device pixels per cell. */
+  cellPx: number;
+}
+
+export interface StampSpec {
+  /** Segment endpoints in cell space. */
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  /** Cells. */
+  radius: number;
+  shape: 0 | 1;
+  scatter: number;
+  seed: number;
+}
 
 export interface Backend {
   readonly kind: BackendKind;
   readonly device: string;
+  readonly simulates: boolean;
+
   /** Device pixels. */
-  resize(width: number, height: number): void;
+  resizeSurface(width: number, height: number): void;
+  allocate(grid: GridSpec): void;
+  setRule(rule: RuleSpec): void;
+
+  advance(steps: number): void;
   render(): void;
+
+  beginStroke(): void;
+  stamp(spec: StampSpec): void;
+
+  snapshotSeed(): void;
+  restoreSeed(): void;
+  clear(): void;
+
   dispose(): void;
 }
 

@@ -1,5 +1,6 @@
-import { Runtime } from './runtime';
+import { dispatch, type EngineCommand } from './dispatch';
 import type { EngineToMain, MainToEngine } from './protocol';
+import { Runtime } from './runtime';
 
 interface WorkerScope {
   postMessage(message: EngineToMain): void;
@@ -7,26 +8,48 @@ interface WorkerScope {
 }
 
 const scope = globalThis as unknown as WorkerScope;
-const emit = (message: EngineToMain) => scope.postMessage(message);
+const emit = (message: EngineToMain) => {
+  scope.postMessage(message);
+};
 
 let runtime: Runtime | null = null;
+let disposed = false;
+const queued: EngineCommand[] = [];
+
+const start = async (canvas: OffscreenCanvas, message: Extract<MainToEngine, { type: 'init' }>) => {
+  const instance = new Runtime(canvas, emit);
+  await instance.init(message.viewport, message.preferred);
+
+  if (disposed) {
+    instance.dispose();
+    return;
+  }
+
+  runtime = instance;
+  for (const command of queued.splice(0)) dispatch(instance, command);
+};
 
 scope.addEventListener('message', (event) => {
   const message = event.data;
 
-  switch (message.type) {
-    case 'init':
-      runtime = new Runtime(message.canvas, emit);
-      void runtime.init(message.viewport, message.preferred);
-      break;
+  if (message.type === 'init') {
+    void start(message.canvas, message).catch((error: unknown) => {
+      emit({ type: 'fatal', message: String(error) });
+    });
+    return;
+  }
 
-    case 'viewport':
-      runtime?.setViewport(message.viewport);
-      break;
+  if (message.type === 'dispose') {
+    disposed = true;
+    runtime?.dispose();
+    runtime = null;
+    queued.length = 0;
+    return;
+  }
 
-    case 'dispose':
-      runtime?.dispose();
-      runtime = null;
-      break;
+  if (runtime) {
+    dispatch(runtime, message);
+  } else {
+    queued.push(message);
   }
 });
