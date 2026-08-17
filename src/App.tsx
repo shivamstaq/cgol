@@ -13,8 +13,10 @@ import {
 import { loadBoard, saveBoard } from './store/persist';
 import { useStore } from './store/store';
 import { consumeCopy, pasteRle, requestCopy, savePng } from './ui/clipboard';
+import { syncFavicon } from './ui/favicon';
 import { Dock, toggleFullscreen } from './ui/Dock';
 import { Ghost } from './ui/Ghost';
+import { GithubLink } from './ui/GithubLink';
 import { applyPalette } from './ui/theme';
 
 const GLOW_CYCLE: GlowLevel[] = ['off', 'subtle', 'full'];
@@ -25,6 +27,7 @@ export function App() {
   const engineRef = useRef<EngineHandle | null>(null);
   const cellSize = useStore((s) => s.cellSize);
   const palette = useStore((s) => s.visuals.palette);
+  const mode = useStore((s) => s.mode);
   const fatal = useStore((s) => s.fatal);
 
   useEffect(() => {
@@ -66,6 +69,12 @@ export function App() {
         return;
       }
       if (event.button !== 0) return;
+
+      // A click that dismisses an open panel should not also edit the board.
+      if (useStore.getState().panel) {
+        useStore.getState().setPanel(null);
+        return;
+      }
 
       const armed = useStore.getState().armed;
       if (armed) {
@@ -111,6 +120,13 @@ export function App() {
       }
     };
 
+    const onContextMenu = (event: MouseEvent) => {
+      if (!useStore.getState().armed) return;
+      event.preventDefault();
+      useStore.getState().setArmed(null);
+    };
+
+    canvas.addEventListener('contextmenu', onContextMenu);
     canvas.addEventListener('pointerdown', onPointerDown);
     canvas.addEventListener('pointermove', onPointerMove);
     canvas.addEventListener('pointerup', onPointerUp);
@@ -118,7 +134,10 @@ export function App() {
     canvas.addEventListener('wheel', onWheel, { passive: false });
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.target instanceof HTMLInputElement) return;
+      if (event.target instanceof HTMLInputElement) {
+        if (event.key !== 'Escape') return;
+        event.target.blur();
+      }
 
       const store = useStore.getState();
 
@@ -203,6 +222,7 @@ export function App() {
       unwatchDpr();
       window.removeEventListener('keydown', onKeyDown);
       canvas.removeEventListener('wheel', onWheel);
+      canvas.removeEventListener('contextmenu', onContextMenu);
       setEngine(null);
       engine.dispose();
       engineRef.current = null;
@@ -221,10 +241,15 @@ export function App() {
     applyPalette(palette);
   }, [palette]);
 
+  useEffect(() => {
+    syncFavicon(mode, palette);
+  }, [mode, palette]);
+
   return (
     <main className="relative h-full w-full bg-bg">
       <div ref={hostRef} className="absolute inset-0" />
       <Ghost />
+      <GithubLink />
       <Dock />
       {fatal && (
         <p className="fixed top-4 left-1/2 z-30 -translate-x-1/2 rounded-md border border-death/40 bg-surface px-3 py-2 text-xs text-death">

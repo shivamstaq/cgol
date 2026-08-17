@@ -19,6 +19,7 @@ export function BrushPanel() {
       </Field>
       <Field label={`size ${brush.size}`}>
         <Slider
+          title="Brush diameter in cells · [ and ] or the mouse wheel"
           value={brush.size}
           min={BRUSH_SIZE_MIN}
           max={BRUSH_SIZE_MAX}
@@ -29,6 +30,7 @@ export function BrushPanel() {
       </Field>
       <Field label={`scatter ${Math.round(brush.scatter * 100)}%`}>
         <Slider
+          title="Fraction of covered cells that flip · below 100% the brush sprays"
           value={brush.scatter}
           min={0.05}
           max={1}

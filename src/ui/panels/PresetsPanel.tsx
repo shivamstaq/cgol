@@ -1,82 +1,133 @@
+import { useState } from 'react';
 import { send } from '../../engine/bridge';
 import type { FillKind } from '../../engine/pack';
 import { PATTERNS } from '../../engine/patterns';
 import { useStore } from '../../store/store';
 import { pasteRle, requestCopy } from '../clipboard';
-import { Field, Slider } from '../Popover';
-import { useState } from 'react';
+import { Choice, Hint, Section, Slider } from '../Popover';
 
-const FILLS: { kind: FillKind; label: string }[] = [
-  { kind: 'random', label: 'Random' },
-  { kind: 'symmetric', label: 'Symmetric' },
-  { kind: 'blob', label: 'Centre blob' },
-];
+const FILL_KINDS: readonly FillKind[] = ['random', 'symmetric', 'blob'];
+
+const FILL_HINTS: Record<FillKind, string> = {
+  random: 'Even noise across the whole board.',
+  symmetric: 'Mirrored in both axes, so it evolves symmetrically.',
+  blob: 'Noise inside a circle at the centre.',
+};
 
 export function PresetsPanel() {
   const setArmed = useStore((s) => s.setArmed);
+  const armed = useStore((s) => s.armed);
+  const [kind, setKind] = useState<FillKind>('random');
   const [density, setDensity] = useState(0.25);
 
   return (
     <>
-      <div className="mb-3 grid grid-cols-2 gap-1">
+      <Hint>
+        {armed
+          ? `${armed.name} is ready — click the board to place it. R rotates, F flips. Esc, right-click, or click ${armed.name} again to cancel.`
+          : 'Pick a pattern, then click the board to place it.'}
+      </Hint>
+
+      <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
         {PATTERNS.map((pattern) => (
           <button
             key={pattern.name}
             type="button"
             onClick={() => {
-              setArmed({ name: pattern.name, rle: pattern.rle });
+              setArmed(
+                armed?.name === pattern.name ? null : { name: pattern.name, rle: pattern.rle },
+              );
             }}
-            className="rounded px-2 py-1 text-left text-xs text-muted transition-colors hover:bg-border/60 hover:text-text"
+            title={armed?.name === pattern.name ? 'Click again to cancel' : `Place ${pattern.name}`}
+            className={`rounded px-2 py-1 text-left text-xs transition-colors ${
+              armed?.name === pattern.name
+                ? 'bg-alive/20 text-alive'
+                : 'text-text/70 hover:bg-border/60 hover:text-text'
+            }`}
           >
             {pattern.name}
           </button>
         ))}
       </div>
 
-      <p className="mb-1 text-[11px] tracking-wide text-muted uppercase">fill</p>
-      <Field label={`${Math.round(density * 100)}%`}>
-        <Slider value={density} min={0.05} max={0.6} step={0.05} onChange={setDensity} />
-      </Field>
-      <div className="mb-3 flex gap-1">
-        {FILLS.map((fill) => (
-          <button
-            key={fill.kind}
-            type="button"
-            onClick={() => {
-              send({ type: 'fill', kind: fill.kind, density });
-            }}
-            className="flex-1 rounded px-2 py-1 text-xs text-muted transition-colors hover:bg-border/60 hover:text-text"
-          >
-            {fill.label}
-          </button>
-        ))}
-      </div>
+      <Section label="Fill the board with noise">
+        <Choice options={FILL_KINDS} value={kind} onChange={setKind} />
+        <Hint>{FILL_HINTS[kind]}</Hint>
 
-      <div className="flex gap-1">
-        <button
-          type="button"
-          onClick={requestCopy}
-          className="flex-1 rounded px-2 py-1 text-xs text-muted transition-colors hover:bg-border/60 hover:text-text"
-        >
-          Copy RLE
-        </button>
+        <label className="mb-2 flex items-center gap-2 text-xs text-text/70">
+          <span className="w-20 shrink-0 whitespace-nowrap">
+            density {Math.round(density * 100)}%
+          </span>
+          <Slider
+            title="Share of cells that start alive"
+            value={density}
+            min={0.05}
+            max={0.6}
+            step={0.05}
+            onChange={setDensity}
+          />
+        </label>
+
         <button
           type="button"
           onClick={() => {
-            send({ type: 'requestPng' });
+            send({ type: 'fill', kind, density });
           }}
-          className="flex-1 rounded px-2 py-1 text-xs text-muted transition-colors hover:bg-border/60 hover:text-text"
+          title="Replaces everything on the board"
+          className="w-full rounded bg-alive/15 px-2 py-1.5 text-xs text-alive transition-colors hover:bg-alive/25"
         >
-          Save PNG
+          Replace board with noise
         </button>
-        <button
-          type="button"
-          onClick={pasteRle}
-          className="flex-1 rounded px-2 py-1 text-xs text-muted transition-colors hover:bg-border/60 hover:text-text"
-        >
-          Paste RLE
-        </button>
-      </div>
+      </Section>
+
+      <Section label="Save and share">
+        <div className="space-y-0.5">
+          <Action
+            label="Copy pattern"
+            note="RLE · ctrl+c"
+            title="Copies the live cells as RLE, the standard Life pattern format"
+            onClick={requestCopy}
+          />
+          <Action
+            label="Paste pattern"
+            note="RLE · ctrl+v"
+            title="Replaces the board with RLE text from your clipboard"
+            onClick={pasteRle}
+          />
+          <Action
+            label="Save image"
+            note="PNG"
+            title="Downloads what is on screen right now"
+            onClick={() => {
+              send({ type: 'requestPng' });
+            }}
+          />
+        </div>
+      </Section>
     </>
+  );
+}
+
+function Action({
+  label,
+  note,
+  title,
+  onClick,
+}: {
+  label: string;
+  note: string;
+  title: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className="flex w-full items-baseline justify-between gap-2 rounded px-2 py-1 text-left text-xs whitespace-nowrap text-text/70 transition-colors hover:bg-border/60 hover:text-text"
+    >
+      <span>{label}</span>
+      <span className="text-[10px] text-text/40">{note}</span>
+    </button>
   );
 }

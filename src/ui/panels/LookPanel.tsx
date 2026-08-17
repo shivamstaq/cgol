@@ -20,6 +20,7 @@ export function LookPanel() {
             onClick={() => {
               setVisuals({ palette: name });
             }}
+            title={`${name} palette — recolours the board and the dock`}
             className={`rounded px-2 py-1 text-left text-xs capitalize transition-colors ${
               name === visuals.palette
                 ? 'bg-alive/15 text-alive'
@@ -46,6 +47,7 @@ export function LookPanel() {
         onClick={() => {
           setVisuals({ gridLines: !visuals.gridLines });
         }}
+        title="Grid lines appear once cells are at least 10 pixels"
         className="w-full rounded px-2 py-1 text-left text-xs text-muted transition-colors hover:bg-border/60 hover:text-text"
       >
         grid lines: {visuals.gridLines ? 'on' : 'off'}

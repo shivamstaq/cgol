@@ -23,6 +23,7 @@ export function RulesPanel() {
             onClick={() => {
               apply(entry.notation);
             }}
+            title={`${entry.name} — ${entry.notation}`}
             className={`rounded px-2 py-1 text-left text-xs transition-colors ${
               entry.notation === rule
                 ? 'bg-alive/15 text-alive'
@@ -37,6 +38,7 @@ export function RulesPanel() {
       <label className="block text-xs text-muted">
         <span className="mb-1 block">custom</span>
         <input
+          title="Birth/survival counts, for example B3/S23 means born on 3 neighbours, surviving on 2 or 3"
           value={draft}
           onChange={(event) => {
             apply(event.target.value);

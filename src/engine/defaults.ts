@@ -8,7 +8,7 @@ export const SPEED_DEFAULT = 20;
 
 export const BRUSH_SIZE_MIN = 1;
 export const BRUSH_SIZE_MAX = 64;
-export const BRUSH_SIZE_DEFAULT = 3;
+export const BRUSH_SIZE_DEFAULT = 1;
 export const BRUSH_SCATTER_DEFAULT = 1;
 
 export const MAX_DPR = 2;

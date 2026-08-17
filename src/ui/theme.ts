@@ -9,6 +9,7 @@ export function applyPalette(name: PaletteName): void {
   root.setProperty('--color-alive', toCss(palette.alive));
   root.setProperty('--color-birth', toCss(palette.birth));
   root.setProperty('--color-death', toCss(palette.death));
-  root.setProperty('--color-surface', toCss(lighten(palette.bg, 0.06)));
-  root.setProperty('--color-border', toCss(lighten(palette.bg, 0.16)));
+  root.setProperty('--color-surface', toCss(lighten(palette.bg, 0.07)));
+  root.setProperty('--color-dock', toCss(lighten(palette.bg, 0.13)));
+  root.setProperty('--color-border', toCss(lighten(palette.bg, 0.26)));
 }

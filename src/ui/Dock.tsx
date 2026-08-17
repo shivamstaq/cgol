@@ -35,6 +35,8 @@ export function Dock() {
   const stats = useStore((s) => s.stats);
   const speed = useStore((s) => s.speed);
   const cellSize = useStore((s) => s.cellSize);
+  const armed = useStore((s) => s.armed);
+  const setArmed = useStore((s) => s.setArmed);
   const dock = useStore((s) => s.dock);
   const hidden = useStore((s) => s.dockHidden);
   const panel = useStore((s) => s.panel);
@@ -135,19 +137,21 @@ export function Dock() {
   return (
     <div
       ref={ref}
+      data-dock
       style={{ left: position?.x ?? 0, top: position?.y ?? 0 }}
       onPointerEnter={() => {
         setIdle(false);
       }}
-      className={`fixed z-20 flex items-center gap-1 rounded-xl border border-border bg-surface px-2 py-1.5 shadow-2xl transition-opacity duration-300 ${
-        idle ? 'opacity-70' : 'opacity-100'
+      className={`fixed z-20 flex items-center gap-1 rounded-xl border border-border bg-dock px-2 py-1.5 shadow-2xl ring-1 ring-black/40 transition-opacity duration-300 ${
+        idle ? 'opacity-95' : 'opacity-100'
       } ${position ? '' : 'invisible'}`}
     >
       <button
         type="button"
         onPointerDown={startDrag}
         aria-label="Move dock"
-        className="cursor-grab px-1 text-muted active:cursor-grabbing hover:text-text"
+        title="Drag to move the dock · h hides it"
+        className="cursor-grab px-1 text-text/60 active:cursor-grabbing hover:text-text"
       >
         <GripIcon />
       </button>
@@ -155,7 +159,9 @@ export function Dock() {
       <Divider />
 
       <Button
-        label={mode === 'running' ? 'Pause' : 'Run'}
+        label={
+          mode === 'running' ? 'Pause — back to drawing (space)' : 'Run the simulation (space)'
+        }
         active={mode === 'running'}
         onClick={() => {
           setMode(mode === 'running' ? 'drawing' : 'running');
@@ -164,7 +170,7 @@ export function Dock() {
         {mode === 'running' ? <DrawIcon /> : <PlayIcon />}
       </Button>
       <Button
-        label="Step"
+        label="Advance one generation (→)"
         onClick={() => {
           send({ type: 'step' });
         }}
@@ -172,7 +178,7 @@ export function Dock() {
         <StepIcon />
       </Button>
       <Button
-        label="Reset"
+        label="Reset to the seed, the board as it was when you last pressed run (r)"
         onClick={() => {
           send({ type: 'reset' });
         }}
@@ -180,7 +186,7 @@ export function Dock() {
         <ResetIcon />
       </Button>
       <Button
-        label="Clear"
+        label="Clear the board (c)"
         onClick={() => {
           send({ type: 'clear' });
         }}
@@ -192,7 +198,7 @@ export function Dock() {
         <>
           <Divider />
           <Trigger
-            label="Brush"
+            label="Brush — shape, size, scatter"
             active={panel === 'brush'}
             onClick={() => {
               toggle('brush');
@@ -204,6 +210,7 @@ export function Dock() {
           <Divider />
           <div className="flex w-32 items-center gap-2 px-1">
             <Slider
+              title="Simulation speed in generations per second · drag to the far right for turbo"
               value={speed.turbo ? SPEED_STEPS + 1 : toSlider(speed.generationsPerSecond)}
               min={0}
               max={SPEED_STEPS + 1}
@@ -215,7 +222,7 @@ export function Dock() {
                 );
               }}
             />
-            <span className="w-12 shrink-0 text-[11px] text-muted tabular-nums">
+            <span className="w-12 shrink-0 text-[11px] text-text/80 tabular-nums">
               {speed.turbo ? 'turbo' : `${format(speed.generationsPerSecond)}/s`}
             </span>
           </div>
@@ -223,12 +230,13 @@ export function Dock() {
           <Divider />
           <div className="flex w-24 items-center gap-2 px-1">
             <Slider
+              title="Cell size in pixels · ctrl+wheel or pinch also works"
               value={cellSize}
               min={CELL_SIZE_MIN}
               max={CELL_SIZE_MAX}
               onChange={setCellSize}
             />
-            <span className="w-6 shrink-0 text-[11px] text-muted tabular-nums">{cellSize}</span>
+            <span className="w-6 shrink-0 text-[11px] text-text/80 tabular-nums">{cellSize}</span>
           </div>
         </>
       )}
@@ -236,7 +244,7 @@ export function Dock() {
       <Divider />
       {compact ? (
         <Trigger
-          label="More"
+          label="More controls"
           active={panel === 'presets'}
           onClick={() => {
             toggle('presets');
@@ -247,7 +255,7 @@ export function Dock() {
       ) : (
         <>
           <Trigger
-            label="Presets"
+            label="Patterns, fills, copy and paste (p)"
             active={panel === 'presets'}
             onClick={() => {
               toggle('presets');
@@ -256,7 +264,7 @@ export function Dock() {
             <PresetsIcon />
           </Trigger>
           <Trigger
-            label="Rules"
+            label="Rules — Conway and other B/S rulesets"
             active={panel === 'rules'}
             onClick={() => {
               toggle('rules');
@@ -265,7 +273,7 @@ export function Dock() {
             <RulesIcon />
           </Trigger>
           <Trigger
-            label="Appearance"
+            label="Appearance — palette, glow, grid lines"
             active={panel === 'look'}
             onClick={() => {
               toggle('look');
@@ -276,13 +284,31 @@ export function Dock() {
         </>
       )}
 
+      {armed && (
+        <>
+          <Divider />
+          <button
+            type="button"
+            onClick={() => {
+              setArmed(null);
+            }}
+            title="Cancel placing this pattern (esc or right-click the board)"
+            className="flex items-center gap-1.5 rounded bg-alive/15 px-2 py-1 text-[11px] whitespace-nowrap text-alive transition-colors hover:bg-alive/25"
+          >
+            placing {armed.name}
+            <span aria-hidden>×</span>
+          </button>
+        </>
+      )}
+
       <Divider />
       <button
         type="button"
         onClick={() => {
           toggle('telemetry');
         }}
-        className="rounded px-2 py-1 text-[11px] text-muted tabular-nums transition-colors hover:bg-border/60 hover:text-text"
+        title="Frames per second · generations per second · generation · live cells — click for telemetry"
+        className="rounded px-2 py-1 text-[11px] whitespace-nowrap text-text/80 tabular-nums transition-colors hover:bg-border/60 hover:text-text"
       >
         {stats
           ? `${stats.fps.toFixed(0)} fps · ${format(stats.generationsPerSecond)} gen/s · ${stats.generation.toLocaleString()} · ${stats.population.toLocaleString()} cells`
@@ -293,7 +319,7 @@ export function Dock() {
         <>
           <Divider />
           <Button
-            label="Fullscreen"
+            label="Fullscreen (f)"
             onClick={() => {
               void toggleFullscreen();
             }}
@@ -301,7 +327,7 @@ export function Dock() {
             <FullscreenIcon />
           </Button>
           <Button
-            label="Shortcuts"
+            label="Keyboard shortcuts (?)"
             onClick={() => {
               toggle('shortcuts');
             }}
@@ -315,6 +341,7 @@ export function Dock() {
         <Popover
           title={panel === 'look' ? 'appearance' : panel}
           flip={flip}
+          width={panel === 'presets' ? 'w-72' : 'w-64'}
           onClose={() => {
             setPanel(null);
           }}
@@ -349,7 +376,7 @@ function Button({
       title={label}
       aria-label={label}
       className={`rounded p-1.5 transition-colors ${
-        active ? 'bg-alive/15 text-alive' : 'text-muted hover:bg-border/60 hover:text-text'
+        active ? 'bg-alive/20 text-alive' : 'text-text/70 hover:bg-border/60 hover:text-text'
       }`}
     >
       {children}
