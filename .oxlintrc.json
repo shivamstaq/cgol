@@ -1,0 +1,36 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": [
+    "eslint",
+    "typescript",
+    "unicorn",
+    "oxc",
+    "react",
+    "import",
+    "promise"
+  ],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "perf": "warn",
+    "pedantic": "off"
+  },
+  "rules": {
+    "react/react-in-jsx-scope": "off",
+    "import/no-unassigned-import": "off",
+    "typescript/no-unsafe-type-assertion": "off",
+    "unicorn/require-post-message-target-origin": "off"
+  },
+  "env": {
+    "browser": true,
+    "worker": true,
+    "es2022": true
+  },
+  "ignorePatterns": [
+    "dist",
+    "node_modules"
+  ],
+  "options": {
+    "typeAware": true
+  }
+}
