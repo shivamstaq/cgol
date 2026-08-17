@@ -9,17 +9,17 @@ Verified 2026-08-17 against primary docs. Stack decisions live in `SPEC.md`; ver
 
 ## Pinned versions
 
-| Package | Version |
-|---|---|
-| vite | 8.2.1 |
-| @vitejs/plugin-react | 6.0.5 |
-| tailwindcss, @tailwindcss/vite | 4.3.3 |
-| typescript | 7.0.2 (native/Go) |
-| oxlint | 1.78.0 |
-| oxlint-tsgolint | 7.0.2001 |
-| react, react-dom | 19.2.8 |
-| zustand | 5.0.15 |
-| @webgpu/types | 0.1.71 |
+| Package                        | Version           |
+| ------------------------------ | ----------------- |
+| vite                           | 8.2.1             |
+| @vitejs/plugin-react           | 6.0.5             |
+| tailwindcss, @tailwindcss/vite | 4.3.3             |
+| typescript                     | 7.0.2 (native/Go) |
+| oxlint                         | 1.78.0            |
+| oxlint-tsgolint                | 7.0.2001          |
+| react, react-dom               | 19.2.8            |
+| zustand                        | 5.0.15            |
+| @webgpu/types                  | 0.1.71            |
 
 ## TypeScript 7
 

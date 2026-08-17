@@ -77,9 +77,7 @@ export class Runtime {
     if (preferred === 'webgl2') return createWebGL2Backend(this.#canvas);
     if (preferred === 'webgpu') return createWebGPUBackend(this.#canvas, onLost);
 
-    return (
-      (await createWebGPUBackend(this.#canvas, onLost)) ?? createWebGL2Backend(this.#canvas)
-    );
+    return (await createWebGPUBackend(this.#canvas, onLost)) ?? createWebGL2Backend(this.#canvas);
   }
 
   readonly #tick = (now: number): void => {
