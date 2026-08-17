@@ -47,6 +47,12 @@ export interface Backend {
   beginStroke(): void;
   stamp(spec: StampSpec): void;
 
+  /** Packed words for the current front buffer. */
+  readState(): Promise<Uint32Array>;
+  writeState(words: Uint32Array): void;
+  /** Kicks a throttled async reduction; returns the latest completed count. */
+  samplePopulation(): number;
+
   snapshotSeed(): void;
   restoreSeed(): void;
   clear(): void;

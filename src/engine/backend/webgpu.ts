@@ -15,6 +15,7 @@ import downsampleShader from '../shaders/downsample.wgsl?raw';
 import emissiveShader from '../shaders/emissive.wgsl?raw';
 import fxShader from '../shaders/fx.wgsl?raw';
 import lifeShader from '../shaders/life.wgsl?raw';
+import populationShader from '../shaders/population.wgsl?raw';
 import presentShader from '../shaders/present.wgsl?raw';
 import stampShader from '../shaders/stamp.wgsl?raw';
 import {
@@ -86,6 +87,7 @@ class WebGPUBackend implements Backend {
   readonly #stampPipeline: GPUComputePipeline;
   readonly #blitPipeline: GPUComputePipeline;
   readonly #fxPipeline: GPUComputePipeline;
+  readonly #populationPipeline: GPUComputePipeline;
   readonly #emissivePipeline: GPURenderPipeline;
   readonly #downsamplePipeline: GPURenderPipeline;
   readonly #presentPipeline: GPURenderPipeline;
@@ -114,6 +116,11 @@ class WebGPUBackend implements Backend {
   #fxGroups: [GPUBindGroup, GPUBindGroup] | null = null;
   #emissiveGroups: [GPUBindGroup, GPUBindGroup] | null = null;
   #mipGroups: GPUBindGroup[] = [];
+  #populationGroups: [GPUBindGroup, GPUBindGroup] | null = null;
+  #populationTotal: GPUBuffer | null = null;
+  #populationStaging: GPUBuffer | null = null;
+  #population = 0;
+  #populationPending = false;
 
   constructor(
     device: GPUDevice,
@@ -148,6 +155,7 @@ class WebGPUBackend implements Backend {
     this.#stampPipeline = compute(stampShader, 'apply');
     this.#blitPipeline = compute(blitShader, 'copy');
     this.#fxPipeline = compute(fxShader, 'update');
+    this.#populationPipeline = compute(populationShader, 'count');
 
     const render = (code: string, target: GPUTextureFormat) => {
       const module = device.createShaderModule({ code });
@@ -189,6 +197,17 @@ class WebGPUBackend implements Backend {
     if (previous) {
       this.#carryOver(previous, next);
       this.#destroyGrid(previous);
+    }
+
+    if (!this.#populationTotal) {
+      this.#populationTotal = this.#gpu.createBuffer({
+        size: 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+      });
+      this.#populationStaging = this.#gpu.createBuffer({
+        size: 4,
+        usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
     }
 
     this.#grid = next;
@@ -353,6 +372,68 @@ class WebGPUBackend implements Backend {
     this.#gpu.queue.submit([encoder.finish()]);
   }
 
+  async readState(): Promise<Uint32Array> {
+    const grid = this.#grid;
+    if (!grid) return new Uint32Array(0);
+
+    const size = grid.wordCount * BYTES_PER_WORD;
+    const staging = this.#gpu.createBuffer({
+      size,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+
+    const encoder = this.#gpu.createCommandEncoder();
+    encoder.copyBufferToBuffer(pick(grid.state, this.#front), 0, staging, 0, size);
+    this.#gpu.queue.submit([encoder.finish()]);
+
+    await staging.mapAsync(GPUMapMode.READ);
+    const words = new Uint32Array(staging.getMappedRange().slice(0));
+    staging.unmap();
+    staging.destroy();
+
+    return words;
+  }
+
+  writeState(words: Uint32Array): void {
+    const grid = this.#grid;
+    if (!grid) return;
+    this.#gpu.queue.writeBuffer(pick(grid.state, this.#front), 0, words);
+  }
+
+  samplePopulation(): number {
+    const grid = this.#grid;
+    const groups = this.#populationGroups;
+    const total = this.#populationTotal;
+    const staging = this.#populationStaging;
+    if (!grid || !groups || !total || !staging || this.#populationPending) return this.#population;
+
+    this.#populationPending = true;
+
+    const encoder = this.#gpu.createCommandEncoder();
+    encoder.clearBuffer(total);
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(this.#populationPipeline);
+    pass.setBindGroup(0, pick(groups, this.#front));
+    pass.dispatchWorkgroups(Math.ceil(grid.wordCount / 64));
+    pass.end();
+    encoder.copyBufferToBuffer(total, 0, staging, 0, 4);
+    this.#gpu.queue.submit([encoder.finish()]);
+
+    void staging
+      .mapAsync(GPUMapMode.READ)
+      .then(() => {
+        this.#population = new Uint32Array(staging.getMappedRange())[0] ?? 0;
+        staging.unmap();
+        this.#populationPending = false;
+        return this.#population;
+      })
+      .catch(() => {
+        this.#populationPending = false;
+      });
+
+    return this.#population;
+  }
+
   snapshotSeed(): void {
     this.#copyState(true);
   }
@@ -372,6 +453,8 @@ class WebGPUBackend implements Backend {
 
   dispose(): void {
     this.#alive = false;
+    this.#populationTotal?.destroy();
+    this.#populationStaging?.destroy();
     if (this.#grid) this.#destroyGrid(this.#grid);
     this.#grid = null;
     this.#context.unconfigure();
@@ -631,6 +714,19 @@ class WebGPUBackend implements Backend {
         ],
       }),
     );
+
+    const total = this.#populationTotal;
+    if (total) {
+      this.#populationGroups = pair((front) =>
+        this.#gpu.createBindGroup({
+          layout: this.#populationPipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: pick(grid.state, front) } },
+            { binding: 1, resource: { buffer: total } },
+          ],
+        }),
+      );
+    }
 
     this.#mipGroups = grid.mips.map((level) =>
       this.#gpu.createBindGroup({

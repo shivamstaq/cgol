@@ -20,7 +20,9 @@ import {
   TURBO_STEPS_MIN,
   TURBO_STEPS_START,
 } from './defaults';
+import { fillWords, orPattern, toPattern, type FillKind, type GridDims } from './pack';
 import { PALETTES } from './palette';
+import { parseRle, toRle } from './rle';
 import type {
   BackendKind,
   BrushSpec,
@@ -62,6 +64,7 @@ export class Runtime {
   #strokeSeed = 0;
 
   #reallocTimer: ReturnType<typeof setTimeout> | undefined;
+  #pngRequested = false;
   #frame = 0;
   #frames = 0;
   #frameMs = 0;
@@ -179,6 +182,67 @@ export class Runtime {
     this.#strokeLast = null;
   }
 
+  stampPattern(rle: string, point: Point): void {
+    const pattern = parseRle(rle);
+    if (!pattern) return;
+
+    this.setMode('drawing');
+    const cell = this.#toCell(point);
+    const originX = Math.round(cell.x - pattern.width / 2);
+    const originY = Math.round(cell.y - pattern.height / 2);
+
+    void this.#mutate((words, dims) => {
+      orPattern(words, dims, pattern, originX, originY);
+    });
+  }
+
+  fill(kind: FillKind, density: number): void {
+    const backend = this.#backend;
+    if (!backend) return;
+
+    this.setMode('drawing');
+    backend.writeState(fillWords(this.#dims(), kind, density));
+    this.#generation = 0;
+  }
+
+  requestRle(): void {
+    const backend = this.#backend;
+    if (!backend) return;
+
+    const emit = async () => {
+      const words = await backend.readState();
+      const pattern = toPattern(words, this.#dims());
+      this.#emit({ type: 'rle', rle: pattern.width > 0 ? toRle(pattern) : '' });
+    };
+
+    void emit();
+  }
+
+  /** Captured after the next present so the drawing buffer still holds the frame. */
+  requestPng(): void {
+    this.#pngRequested = true;
+  }
+
+  loadRle(rle: string): void {
+    const pattern = parseRle(rle);
+    const backend = this.#backend;
+    if (!pattern || !backend) return;
+
+    this.setMode('drawing');
+    const dims = this.#dims();
+    const words = new Uint32Array(dims.wordsPerRow * dims.rows);
+    orPattern(
+      words,
+      dims,
+      pattern,
+      Math.floor((dims.cols - pattern.width) / 2),
+      Math.floor((dims.rows - pattern.height) / 2),
+    );
+
+    backend.writeState(words);
+    this.#generation = 0;
+  }
+
   stepOnce(): void {
     this.setMode('drawing');
     this.#backend?.advance(1);
@@ -249,6 +313,25 @@ export class Runtime {
     }
   }
 
+  #dims(): GridDims {
+    return {
+      cols: this.#grid.cols,
+      rows: this.#grid.rows,
+      wordsPerRow: Math.ceil(this.#grid.cols / 32),
+    };
+  }
+
+  async #mutate(change: (words: Uint32Array, dims: GridDims) => void): Promise<void> {
+    const backend = this.#backend;
+    if (!backend) return;
+
+    const words = await backend.readState();
+    if (words.length === 0) return;
+
+    change(words, this.#dims());
+    backend.writeState(words);
+  }
+
   #toCell(point: Point): Point {
     const cellSize = this.#viewport?.cellSize ?? 1;
     return { x: point.x / cellSize, y: point.y / cellSize };
@@ -316,10 +399,31 @@ export class Runtime {
 
     backend.render(Math.min(raw, MAX_FRAME_DELTA_MS), stepped);
 
+    if (this.#pngRequested) {
+      this.#pngRequested = false;
+      this.#capture();
+    }
+
     if (now - this.#statsAt >= STATS_INTERVAL_MS) {
       this.#pushStats(now);
     }
   };
+
+  #capture(): void {
+    const canvas = this.#canvas;
+
+    if ('convertToBlob' in canvas) {
+      void canvas.convertToBlob({ type: 'image/png' }).then((blob) => {
+        this.#emit({ type: 'png', blob });
+        return blob;
+      });
+      return;
+    }
+
+    canvas.toBlob((blob) => {
+      if (blob) this.#emit({ type: 'png', blob });
+    }, 'image/png');
+  }
 
   #pushStats(now: number): void {
     const elapsed = now - this.#statsAt;
@@ -344,6 +448,7 @@ export class Runtime {
         cells: this.#grid.cols * this.#grid.rows,
         generation: this.#generation,
         generationsPerSecond: (steps * 1000) / elapsed,
+        population: this.#backend?.samplePopulation() ?? 0,
       },
     });
   }

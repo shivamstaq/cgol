@@ -32,6 +32,21 @@ export function dispatch(runtime: Runtime, command: EngineCommand): void {
     case 'strokeEnd':
       runtime.strokeEnd();
       break;
+    case 'stampPattern':
+      runtime.stampPattern(command.rle, command.point);
+      break;
+    case 'fill':
+      runtime.fill(command.kind, command.density);
+      break;
+    case 'requestRle':
+      runtime.requestRle();
+      break;
+    case 'requestPng':
+      runtime.requestPng();
+      break;
+    case 'loadRle':
+      runtime.loadRle(command.rle);
+      break;
     case 'step':
       runtime.stepOnce();
       break;

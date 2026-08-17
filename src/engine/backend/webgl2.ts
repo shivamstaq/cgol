@@ -15,6 +15,7 @@ import copyFrag from '../shaders/gl/copy.frag.glsl?raw';
 import emissiveFrag from '../shaders/gl/emissive.frag.glsl?raw';
 import fxFrag from '../shaders/gl/fx.frag.glsl?raw';
 import lifeFrag from '../shaders/gl/life.frag.glsl?raw';
+import populationFrag from '../shaders/gl/population.frag.glsl?raw';
 import presentFrag from '../shaders/gl/present.frag.glsl?raw';
 import quadVert from '../shaders/gl/quad.vert.glsl?raw';
 import stampFrag from '../shaders/gl/stamp.frag.glsl?raw';
@@ -48,12 +49,14 @@ interface Grid {
   seed: WebGLTexture;
   base: WebGLTexture;
   emissive: WebGLTexture;
+  rowCounts: WebGLTexture;
   stateFbo: [WebGLFramebuffer, WebGLFramebuffer];
   maskFbo: [WebGLFramebuffer, WebGLFramebuffer];
   fxFbo: [WebGLFramebuffer, WebGLFramebuffer];
   seedFbo: WebGLFramebuffer;
   baseFbo: WebGLFramebuffer;
   emissiveFbo: WebGLFramebuffer;
+  rowCountsFbo: WebGLFramebuffer;
   /** [mask target][state target] */
   stampFbo: [[WebGLFramebuffer, WebGLFramebuffer], [WebGLFramebuffer, WebGLFramebuffer]];
 }
@@ -85,6 +88,7 @@ class WebGL2Backend implements Backend {
   readonly #fx: Program;
   readonly #emissive: Program;
   readonly #present: Program;
+  readonly #population: Program;
 
   #grid: Grid | null = null;
   #front = 0;
@@ -94,6 +98,9 @@ class WebGL2Backend implements Backend {
   #width = 1;
   #height = 1;
   #rule: RuleSpec = RULE_CONWAY;
+  #populationValue = 0;
+  #populationPack: WebGLBuffer | null = null;
+  #populationFence: WebGLSync | null = null;
   #visuals: ResolvedVisuals = {
     palette: PALETTES.aurora,
     glow: GLOW_STRENGTH.subtle,
@@ -147,6 +154,7 @@ class WebGL2Backend implements Backend {
       'uBirth',
       'uDeath',
     ]);
+    this.#population = program(gl, vertex, populationFrag, ['uState', 'uWordsPerRow']);
     this.#present = program(gl, vertex, presentFrag, [
       'uState',
       'uFx',
@@ -302,6 +310,63 @@ class WebGL2Backend implements Backend {
     this.#maskFront ^= 1;
   }
 
+  readState(): Promise<Uint32Array> {
+    const grid = this.#grid;
+    if (!grid) return Promise.resolve(new Uint32Array(0));
+
+    const gl = this.#gl;
+    const words = new Uint32Array(grid.wordsPerRow * grid.rows);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, pick(grid.stateFbo, this.#front));
+    gl.readPixels(0, 0, grid.wordsPerRow, grid.rows, gl.RED_INTEGER, gl.UNSIGNED_INT, words);
+
+    return Promise.resolve(words);
+  }
+
+  writeState(words: Uint32Array): void {
+    const grid = this.#grid;
+    if (!grid) return;
+
+    const gl = this.#gl;
+    gl.bindTexture(gl.TEXTURE_2D, pick(grid.state, this.#front));
+    gl.texSubImage2D(
+      gl.TEXTURE_2D,
+      0,
+      0,
+      0,
+      grid.wordsPerRow,
+      grid.rows,
+      gl.RED_INTEGER,
+      gl.UNSIGNED_INT,
+      words,
+    );
+  }
+
+  samplePopulation(): number {
+    const grid = this.#grid;
+    if (!grid) return this.#populationValue;
+
+    const gl = this.#gl;
+    this.#collectPopulation(grid);
+    if (this.#populationFence) return this.#populationValue;
+
+    gl.useProgram(this.#population.program);
+    gl.uniform1ui(this.#population.at('uWordsPerRow'), grid.wordsPerRow);
+    this.#bind(0, pick(grid.state, this.#front), this.#population.at('uState'));
+    this.#draw(grid.rowCountsFbo, 1, grid.rows);
+
+    this.#populationPack ??= gl.createBuffer();
+    const pack = this.#populationPack;
+    if (!pack) return this.#populationValue;
+
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pack);
+    gl.bufferData(gl.PIXEL_PACK_BUFFER, grid.rows * 4, gl.STREAM_READ);
+    gl.readPixels(0, 0, 1, grid.rows, gl.RED_INTEGER, gl.UNSIGNED_INT, 0);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    this.#populationFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+
+    return this.#populationValue;
+  }
+
   snapshotSeed(): void {
     const grid = this.#grid;
     if (!grid) return;
@@ -321,9 +386,32 @@ class WebGL2Backend implements Backend {
   }
 
   dispose(): void {
+    if (this.#populationFence) this.#gl.deleteSync(this.#populationFence);
+    if (this.#populationPack) this.#gl.deleteBuffer(this.#populationPack);
     if (this.#grid) this.#destroyGrid(this.#grid);
     this.#grid = null;
     this.#gl.getExtension('WEBGL_lose_context')?.loseContext();
+  }
+
+  /** Reads the pending row-count buffer once the GPU has finished with it. */
+  #collectPopulation(grid: Grid): void {
+    const gl = this.#gl;
+    const fence = this.#populationFence;
+    const pack = this.#populationPack;
+    if (!fence || !pack) return;
+
+    const status = gl.clientWaitSync(fence, 0, 0);
+    if (status !== gl.ALREADY_SIGNALED && status !== gl.CONDITION_SATISFIED) return;
+
+    gl.deleteSync(fence);
+    this.#populationFence = null;
+
+    const counts = new Uint32Array(grid.rows);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pack);
+    gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, counts);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+
+    this.#populationValue = counts.reduce((total, value) => total + value, 0);
   }
 
   #updateFx(grid: Grid, deltaMs: number, stepped: boolean): void {
@@ -374,6 +462,7 @@ class WebGL2Backend implements Backend {
     const seed = packed();
     const base = packed();
     const emissive = createTexture(gl, cols, rows, { format: gl.RGBA8, levels, linear: true });
+    const rowCounts = createTexture(gl, 1, rows, { format: gl.R32UI, levels: 1, linear: false });
 
     const grid: Grid = {
       cols,
@@ -385,19 +474,27 @@ class WebGL2Backend implements Backend {
       seed,
       base,
       emissive,
+      rowCounts,
       stateFbo: [createFbo(gl, [state[0]]), createFbo(gl, [state[1]])],
       maskFbo: [createFbo(gl, [mask[0]]), createFbo(gl, [mask[1]])],
       fxFbo: [createFbo(gl, [fx[0]]), createFbo(gl, [fx[1]])],
       seedFbo: createFbo(gl, [seed]),
       baseFbo: createFbo(gl, [base]),
       emissiveFbo: createFbo(gl, [emissive]),
+      rowCountsFbo: createFbo(gl, [rowCounts]),
       stampFbo: [
         [createFbo(gl, [mask[0], state[0]]), createFbo(gl, [mask[0], state[1]])],
         [createFbo(gl, [mask[1], state[0]]), createFbo(gl, [mask[1], state[1]])],
       ],
     };
 
-    for (const fbo of [...grid.stateFbo, ...grid.maskFbo, grid.seedFbo, grid.baseFbo]) {
+    for (const fbo of [
+      ...grid.stateFbo,
+      ...grid.maskFbo,
+      grid.seedFbo,
+      grid.baseFbo,
+      grid.rowCountsFbo,
+    ]) {
       this.#clearInteger(fbo);
     }
     for (const fbo of [...grid.fxFbo, grid.emissiveFbo]) {
@@ -416,6 +513,7 @@ class WebGL2Backend implements Backend {
       grid.seed,
       grid.base,
       grid.emissive,
+      grid.rowCounts,
     ]) {
       gl.deleteTexture(texture);
     }
@@ -426,6 +524,7 @@ class WebGL2Backend implements Backend {
       grid.seedFbo,
       grid.baseFbo,
       grid.emissiveFbo,
+      grid.rowCountsFbo,
       ...grid.stampFbo.flat(),
     ]) {
       gl.deleteFramebuffer(fbo);

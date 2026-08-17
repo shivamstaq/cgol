@@ -57,7 +57,12 @@ Temporary bindings until the dock lands in M5.
 - `src/engine/shaders/` — WGSL for WebGPU: `life` (SWAR step), `stamp` (XOR brush), `blit`
   (realloc), `present` (cell raster).
 - `src/engine/shaders/gl/` — GLSL ES 3.0 equivalents for WebGL2, plus `copy` for buffer copies.
+- `src/engine/rle.ts`, `src/engine/patterns.ts`, `src/engine/rules.ts` — RLE parse/serialise,
+  the stamp catalog, and rule notation.
+- `src/engine/pack.ts` — bit packing for stamps, fills, and bounding-box extraction.
+- `src/ui/Dock.tsx` and `src/ui/panels/` — dock and popovers.
 - `src/ui/theme.ts` — mirrors the active palette onto the Tailwind theme tokens.
+- `src/store/store.ts`, `src/store/persist.ts` — UI state, engine mirroring, localStorage.
 - `src/engine/client.ts` — main-thread handle; worker path, or inline runtime when
   `transferControlToOffscreen` is unavailable.
 - `src/store/store.ts` — UI state and engine stats. React never runs in the frame path.
@@ -99,7 +104,7 @@ Design decisions: [SPEC.md](SPEC.md).
 - [x] M2 — WebGPU packed-SWAR engine, torus, two-state machine, XOR drawing, realloc
 - [x] M3 — WebGL2 fallback at simulation parity
 - [x] M4 — FX pipeline: birth/death styling, mip glow, palettes
-- [ ] M5 — dock, presets, rules, persistence, shortcuts, touch
+- [x] M5 — dock, presets, rules, persistence, shortcuts, touch
 
 ## License
 

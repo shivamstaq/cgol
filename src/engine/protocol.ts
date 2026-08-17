@@ -1,3 +1,4 @@
+import type { FillKind } from './pack';
 import type { PaletteName } from './palette';
 
 export type BackendKind = 'webgpu' | 'webgl2';
@@ -53,6 +54,7 @@ export interface EngineStats {
   cells: number;
   generation: number;
   generationsPerSecond: number;
+  population: number;
 }
 
 export type MainToEngine =
@@ -66,6 +68,11 @@ export type MainToEngine =
   | { type: 'strokeStart'; point: Point }
   | { type: 'strokeMove'; points: Point[] }
   | { type: 'strokeEnd' }
+  | { type: 'stampPattern'; rle: string; point: Point }
+  | { type: 'fill'; kind: FillKind; density: number }
+  | { type: 'requestRle' }
+  | { type: 'requestPng' }
+  | { type: 'loadRle'; rle: string }
   | { type: 'step' }
   | { type: 'reset' }
   | { type: 'clear' }
@@ -75,4 +82,6 @@ export type EngineToMain =
   | { type: 'ready'; backend: BackendKind; device: string; simulates: boolean }
   | { type: 'mode'; mode: Mode }
   | { type: 'stats'; stats: EngineStats }
+  | { type: 'rle'; rle: string }
+  | { type: 'png'; blob: Blob }
   | { type: 'fatal'; message: string };
