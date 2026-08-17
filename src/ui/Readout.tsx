@@ -4,7 +4,6 @@ export function Readout() {
   const mode = useStore((s) => s.mode);
   const backend = useStore((s) => s.backend);
   const device = useStore((s) => s.device);
-  const simulates = useStore((s) => s.simulates);
   const speed = useStore((s) => s.speed);
   const stats = useStore((s) => s.stats);
   const fatal = useStore((s) => s.fatal);
@@ -31,8 +30,7 @@ export function Readout() {
             value={stats ? `${stats.fps.toFixed(0)} (${stats.frameMs.toFixed(1)} ms)` : '—'}
           />
           <p className="mt-2 text-[11px] text-muted/70">
-            drag to draw · space {simulates ? 'run/draw' : '(sim needs webgpu)'} · → step · r reset
-            · c clear · t turbo
+            drag to draw · space run/draw · → step · r reset · c clear · t turbo
           </p>
         </>
       )}

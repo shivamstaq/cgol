@@ -67,8 +67,24 @@ Verified 2026-08-17 against primary docs. Stack decisions live in `SPEC.md`; ver
 
 ## WebGL2
 
-- Packed state uses `R32UI` textures with `gl.RGBA_INTEGER`-style integer sampling and integer fragment output.
-- Async readback: `PIXEL_PACK_BUFFER` + `fenceSync` + `clientWaitSync` polling; never `readPixels` into a sync stall.
+- Do NOT pass `desynchronized: true` when the canvas is worker-owned — it breaks presentation on
+  Chrome/ANGLE while `getError()` stays clean and the drawing buffer looks correct.
+- Packed state uses immutable `R32UI` textures (`texStorage2D`), `usampler2D` + `texelFetch`,
+  `layout(location = N) out uvec4` outputs, and `NEAREST` filtering (required for integer textures).
+- Read-modify-write needs ping-pong: the XOR stroke mask uses two textures with MRT writing mask and
+  state in one pass.
+- `clearBufferuiv` zeroes an integer target; `drawBuffers` state is per-framebuffer, set at creation.
+- GLSL ES `%` is undefined for negative operands — wrap with explicit comparisons, not modulo.
+- Readback for debugging: `readPixels(..., gl.RED_INTEGER, gl.UNSIGNED_INT, Uint32Array)`.
+- Async readback: `PIXEL_PACK_BUFFER` + `fenceSync` + `clientWaitSync` polling; never `readPixels`
+  into a sync stall.
+
+## Debugging the render path
+
+- A correct present pass paints the dead colour everywhere, which is pixel-identical to the CSS
+  background — an empty board and a broken backend look the same. Force constant colours in the
+  fragment shader to tell them apart, and check a clear colour only with the present pass disabled.
+- `?backend=` and `?thread=main` isolate backend bugs from worker-transport bugs.
 
 ## GitHub Pages
 

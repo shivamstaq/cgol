@@ -28,10 +28,11 @@ Live: https://shivamstaq.github.io/cgol/
 
 ## URL parameters
 
-| Parameter         | Effect                            |
-| ----------------- | --------------------------------- |
-| `?backend=webgpu` | Force WebGPU; fail if unavailable |
-| `?backend=webgl2` | Force WebGL2; fail if unavailable |
+| Parameter         | Effect                                                  |
+| ----------------- | ------------------------------------------------------- |
+| `?backend=webgpu` | Force WebGPU; fail if unavailable                       |
+| `?backend=webgl2` | Force WebGL2; fail if unavailable                       |
+| `?thread=main`    | Run the engine on the main thread instead of the worker |
 
 ## Controls
 
@@ -53,11 +54,22 @@ Temporary bindings until the dock lands in M5.
   debounced reallocation, stats at 8Hz.
 - `src/engine/dispatch.ts` — command switch shared by the worker and inline paths.
 - `src/engine/backend/` — `Backend` interface with WebGPU and WebGL2 implementations.
-- `src/engine/shaders/` — WGSL: `life` (SWAR step), `stamp` (XOR brush), `blit` (realloc),
-  `present` (cell raster).
+- `src/engine/shaders/` — WGSL for WebGPU: `life` (SWAR step), `stamp` (XOR brush), `blit`
+  (realloc), `present` (cell raster).
+- `src/engine/shaders/gl/` — GLSL ES 3.0 equivalents for WebGL2, plus `copy` for buffer copies.
 - `src/engine/client.ts` — main-thread handle; worker path, or inline runtime when
   `transferControlToOffscreen` is unavailable.
 - `src/store/store.ts` — UI state and engine stats. React never runs in the frame path.
+
+## Backend differences
+
+Both backends share the packed layout, rule masks, and pixel output.
+
+| Concern     | WebGPU                                           | WebGL2                                                        |
+| ----------- | ------------------------------------------------ | ------------------------------------------------------------- |
+| Step        | Compute pass, storage buffers                    | Fragment pass into `R32UI` ping-pong textures                 |
+| Stroke mask | Read-write storage buffer, bounding-box dispatch | Ping-pong textures, MRT writes mask and state, full-grid pass |
+| Copies      | `copyBufferToBuffer`                             | Full-screen copy shader                                       |
 
 ## State layout
 
@@ -73,7 +85,7 @@ Design decisions: [SPEC.md](SPEC.md).
 
 - [x] M1 — scaffold, worker handshake, both backends clearing, Pages deploy
 - [x] M2 — WebGPU packed-SWAR engine, torus, two-state machine, XOR drawing, realloc
-- [ ] M3 — WebGL2 fallback at simulation parity
+- [x] M3 — WebGL2 fallback at simulation parity
 - [ ] M4 — FX pipeline: birth/death styling, mip glow, palettes
 - [ ] M5 — dock, presets, rules, persistence, shortcuts, touch
 

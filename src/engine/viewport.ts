@@ -16,6 +16,11 @@ export function preferredBackend(search: string): BackendKind | null {
   return value === 'webgpu' || value === 'webgl2' ? value : null;
 }
 
+/** Forces the main-thread runtime instead of the worker. */
+export function forceInline(search: string): boolean {
+  return new URLSearchParams(search).get('thread') === 'main';
+}
+
 /** Fires when devicePixelRatio changes; re-arms on each change. */
 export function watchDevicePixelRatio(onChange: () => void): () => void {
   let query: MediaQueryList | null = null;

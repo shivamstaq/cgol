@@ -13,9 +13,12 @@ export function createEngine(
   viewport: ViewportSpec,
   preferred: BackendKind | null,
   onEvent: (event: EngineToMain) => void,
+  inline = false,
 ): EngineHandle {
   const offscreenSupported =
-    typeof Worker !== 'undefined' && typeof canvas.transferControlToOffscreen === 'function';
+    !inline &&
+    typeof Worker !== 'undefined' &&
+    typeof canvas.transferControlToOffscreen === 'function';
 
   return offscreenSupported
     ? createWorkerEngine(canvas, viewport, preferred, onEvent)

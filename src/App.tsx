@@ -1,7 +1,12 @@
 import { useEffect, useRef } from 'react';
 import { createEngine, type EngineHandle } from './engine/client';
 import type { EngineToMain, Point } from './engine/protocol';
-import { preferredBackend, readViewport, watchDevicePixelRatio } from './engine/viewport';
+import {
+  forceInline,
+  preferredBackend,
+  readViewport,
+  watchDevicePixelRatio,
+} from './engine/viewport';
 import { useStore } from './store/store';
 import { Readout } from './ui/Readout';
 
@@ -23,6 +28,7 @@ export function App() {
       readViewport(host, useStore.getState().cellSize),
       preferredBackend(window.location.search),
       handleEngineEvent,
+      forceInline(window.location.search),
     );
     engineRef.current = engine;
 
