@@ -1,3 +1,4 @@
+import type { Palette } from '../palette';
 import type { BackendKind, RuleSpec } from '../protocol';
 
 export type RenderCanvas = HTMLCanvasElement | OffscreenCanvas;
@@ -22,6 +23,13 @@ export interface StampSpec {
   seed: number;
 }
 
+export interface ResolvedVisuals {
+  palette: Palette;
+  /** Glow strength, 0 disables the emissive chain. */
+  glow: number;
+  gridLines: boolean;
+}
+
 export interface Backend {
   readonly kind: BackendKind;
   readonly device: string;
@@ -31,9 +39,10 @@ export interface Backend {
   resizeSurface(width: number, height: number): void;
   allocate(grid: GridSpec): void;
   setRule(rule: RuleSpec): void;
+  setVisuals(visuals: ResolvedVisuals): void;
 
   advance(steps: number): void;
-  render(): void;
+  render(deltaMs: number, stepped: boolean): void;
 
   beginStroke(): void;
   stamp(spec: StampSpec): void;

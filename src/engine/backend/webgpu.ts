@@ -1,7 +1,19 @@
-import { RULE_CONWAY } from '../defaults';
-import { ALIVE, BACKGROUND } from '../palette';
+import {
+  BIRTH_MS,
+  DEATH_SHRINK_MS,
+  DEATH_TOTAL_MS,
+  EMISSIVE_MIPS,
+  GEOMETRY_MIN_CELL_PX,
+  GLOW_STRENGTH,
+  GRID_MIN_CELL_PX,
+  RULE_CONWAY,
+} from '../defaults';
+import { PALETTES } from '../palette';
 import type { RuleSpec } from '../protocol';
 import blitShader from '../shaders/blit.wgsl?raw';
+import downsampleShader from '../shaders/downsample.wgsl?raw';
+import emissiveShader from '../shaders/emissive.wgsl?raw';
+import fxShader from '../shaders/fx.wgsl?raw';
 import lifeShader from '../shaders/life.wgsl?raw';
 import presentShader from '../shaders/present.wgsl?raw';
 import stampShader from '../shaders/stamp.wgsl?raw';
@@ -10,21 +22,28 @@ import {
   type Backend,
   type GridSpec,
   type RenderCanvas,
+  type ResolvedVisuals,
   type StampSpec,
 } from './types';
 
 const WORKGROUP = 8;
 const BYTES_PER_WORD = 4;
+const EMISSIVE_FORMAT: GPUTextureFormat = 'rgba8unorm';
 
 interface Grid {
   cols: number;
   rows: number;
   wordsPerRow: number;
   wordCount: number;
+  cellCount: number;
   state: [GPUBuffer, GPUBuffer];
   seed: GPUBuffer;
   strokeBase: GPUBuffer;
   strokeMask: GPUBuffer;
+  fx: GPUBuffer;
+  emissive: GPUTexture;
+  emissiveView: GPUTextureView;
+  mips: { source: GPUTextureView; target: GPUTextureView }[];
 }
 
 export async function createWebGPUBackend(
@@ -61,26 +80,40 @@ class WebGPUBackend implements Backend {
   readonly #gpu: GPUDevice;
   readonly #context: GPUCanvasContext;
   readonly #format: GPUTextureFormat;
+  readonly #sampler: GPUSampler;
 
   readonly #stepPipeline: GPUComputePipeline;
   readonly #stampPipeline: GPUComputePipeline;
   readonly #blitPipeline: GPUComputePipeline;
+  readonly #fxPipeline: GPUComputePipeline;
+  readonly #emissivePipeline: GPURenderPipeline;
+  readonly #downsamplePipeline: GPURenderPipeline;
   readonly #presentPipeline: GPURenderPipeline;
 
   readonly #gridUniform: GPUBuffer;
   readonly #viewUniform: GPUBuffer;
   readonly #stampUniform: GPUBuffer;
   readonly #blitUniform: GPUBuffer;
+  readonly #fxUniform: GPUBuffer;
+  readonly #emissiveUniform: GPUBuffer;
 
   #grid: Grid | null = null;
   #front = 0;
   #cellPx = 1;
   #rule: RuleSpec = RULE_CONWAY;
+  #visuals: ResolvedVisuals = {
+    palette: PALETTES.aurora,
+    glow: GLOW_STRENGTH.subtle,
+    gridLines: true,
+  };
   #alive = true;
 
   #stepGroups: [GPUBindGroup, GPUBindGroup] | null = null;
   #presentGroups: [GPUBindGroup, GPUBindGroup] | null = null;
   #stampGroups: [GPUBindGroup, GPUBindGroup] | null = null;
+  #fxGroups: [GPUBindGroup, GPUBindGroup] | null = null;
+  #emissiveGroups: [GPUBindGroup, GPUBindGroup] | null = null;
+  #mipGroups: GPUBindGroup[] = [];
 
   constructor(
     device: GPUDevice,
@@ -101,75 +134,81 @@ class WebGPUBackend implements Backend {
       return info;
     });
 
-    this.#stepPipeline = device.createComputePipeline({
-      layout: 'auto',
-      compute: { module: device.createShaderModule({ code: lifeShader }), entryPoint: 'step' },
-    });
-    this.#stampPipeline = device.createComputePipeline({
-      layout: 'auto',
-      compute: { module: device.createShaderModule({ code: stampShader }), entryPoint: 'apply' },
-    });
-    this.#blitPipeline = device.createComputePipeline({
-      layout: 'auto',
-      compute: { module: device.createShaderModule({ code: blitShader }), entryPoint: 'copy' },
+    device.addEventListener('uncapturederror', (event) => {
+      if (this.#alive) onLost(event.error.message);
     });
 
-    const presentModule = device.createShaderModule({ code: presentShader });
-    this.#presentPipeline = device.createRenderPipeline({
-      layout: 'auto',
-      vertex: { module: presentModule, entryPoint: 'vs' },
-      fragment: { module: presentModule, entryPoint: 'fs', targets: [{ format }] },
-      primitive: { topology: 'triangle-list' },
+    const compute = (code: string, entryPoint: string) =>
+      device.createComputePipeline({
+        layout: 'auto',
+        compute: { module: device.createShaderModule({ code }), entryPoint },
+      });
+
+    this.#stepPipeline = compute(lifeShader, 'step');
+    this.#stampPipeline = compute(stampShader, 'apply');
+    this.#blitPipeline = compute(blitShader, 'copy');
+    this.#fxPipeline = compute(fxShader, 'update');
+
+    const render = (code: string, target: GPUTextureFormat) => {
+      const module = device.createShaderModule({ code });
+      return device.createRenderPipeline({
+        layout: 'auto',
+        vertex: { module, entryPoint: 'vs' },
+        fragment: { module, entryPoint: 'fs', targets: [{ format: target }] },
+        primitive: { topology: 'triangle-list' },
+      });
+    };
+
+    this.#emissivePipeline = render(emissiveShader, EMISSIVE_FORMAT);
+    this.#downsamplePipeline = render(downsampleShader, EMISSIVE_FORMAT);
+    this.#presentPipeline = render(presentShader, format);
+
+    this.#sampler = device.createSampler({
+      magFilter: 'linear',
+      minFilter: 'linear',
+      mipmapFilter: 'linear',
     });
 
     this.#gridUniform = this.#uniform(32);
-    this.#viewUniform = this.#uniform(48);
+    this.#viewUniform = this.#uniform(96);
     this.#stampUniform = this.#uniform(64);
     this.#blitUniform = this.#uniform(32);
+    this.#fxUniform = this.#uniform(32);
+    this.#emissiveUniform = this.#uniform(64);
   }
 
   resizeSurface(): void {
     this.#configure();
   }
 
-  allocate(grid: GridSpec): void {
-    const wordsPerRow = Math.ceil(grid.cols / 32);
-    const next: Grid = {
-      cols: grid.cols,
-      rows: grid.rows,
-      wordsPerRow,
-      wordCount: wordsPerRow * grid.rows,
-      state: [this.#storage(wordsPerRow * grid.rows), this.#storage(wordsPerRow * grid.rows)],
-      seed: this.#storage(wordsPerRow * grid.rows),
-      strokeBase: this.#storage(wordsPerRow * grid.rows),
-      strokeMask: this.#storage(wordsPerRow * grid.rows),
-    };
-
+  allocate(spec: GridSpec): void {
+    const wordsPerRow = Math.ceil(spec.cols / 32);
+    const next = this.#createGrid(spec.cols, spec.rows, wordsPerRow);
     const previous = this.#grid;
+
     if (previous) {
       this.#carryOver(previous, next);
-      for (const buffer of [
-        previous.state[0],
-        previous.state[1],
-        previous.seed,
-        previous.strokeBase,
-        previous.strokeMask,
-      ]) {
-        buffer.destroy();
-      }
+      this.#destroyGrid(previous);
     }
 
     this.#grid = next;
     this.#front = 0;
-    this.#cellPx = grid.cellPx;
+    this.#cellPx = spec.cellPx;
     this.#writeGridUniform();
     this.#writeViewUniform();
+    this.#writeEmissiveUniform();
     this.#buildBindGroups();
   }
 
   setRule(rule: RuleSpec): void {
     this.#rule = rule;
     this.#writeGridUniform();
+  }
+
+  setVisuals(visuals: ResolvedVisuals): void {
+    this.#visuals = visuals;
+    this.#writeViewUniform();
+    this.#writeEmissiveUniform();
   }
 
   advance(steps: number): void {
@@ -193,9 +232,46 @@ class WebGPUBackend implements Backend {
     this.#gpu.queue.submit([encoder.finish()]);
   }
 
-  render(): void {
-    const [r, g, b, a] = BACKGROUND;
+  render(deltaMs: number, stepped: boolean): void {
+    const grid = this.#grid;
     const encoder = this.#gpu.createCommandEncoder();
+
+    if (grid && this.#fxGroups) {
+      this.#gpu.queue.writeBuffer(this.#fxUniform, 0, fxParams(grid, deltaMs, stepped));
+
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(this.#fxPipeline);
+      pass.setBindGroup(0, pick(this.#fxGroups, this.#front));
+      pass.dispatchWorkgroups(Math.ceil(grid.cols / WORKGROUP), Math.ceil(grid.rows / WORKGROUP));
+      pass.end();
+    }
+
+    if (grid && this.#visuals.glow > 0 && this.#emissiveGroups) {
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [
+          { view: grid.mips[0]?.source ?? grid.emissiveView, loadOp: 'clear', storeOp: 'store' },
+        ],
+      });
+      pass.setPipeline(this.#emissivePipeline);
+      pass.setBindGroup(0, pick(this.#emissiveGroups, this.#front));
+      pass.draw(3);
+      pass.end();
+
+      grid.mips.forEach((level, index) => {
+        const group = this.#mipGroups[index];
+        if (!group) return;
+
+        const mip = encoder.beginRenderPass({
+          colorAttachments: [{ view: level.target, loadOp: 'clear', storeOp: 'store' }],
+        });
+        mip.setPipeline(this.#downsamplePipeline);
+        mip.setBindGroup(0, group);
+        mip.draw(3);
+        mip.end();
+      });
+    }
+
+    const [r, g, b, a] = this.#visuals.palette.bg;
     const pass = encoder.beginRenderPass({
       colorAttachments: [
         {
@@ -207,10 +283,9 @@ class WebGPUBackend implements Backend {
       ],
     });
 
-    const groups = this.#presentGroups;
-    if (groups) {
+    if (this.#presentGroups) {
       pass.setPipeline(this.#presentPipeline);
-      pass.setBindGroup(0, pick(groups, this.#front));
+      pass.setBindGroup(0, pick(this.#presentGroups, this.#front));
       pass.draw(3);
     }
 
@@ -297,18 +372,7 @@ class WebGPUBackend implements Backend {
 
   dispose(): void {
     this.#alive = false;
-    const grid = this.#grid;
-    if (grid) {
-      for (const buffer of [
-        grid.state[0],
-        grid.state[1],
-        grid.seed,
-        grid.strokeBase,
-        grid.strokeMask,
-      ]) {
-        buffer.destroy();
-      }
-    }
+    if (this.#grid) this.#destroyGrid(this.#grid);
     this.#grid = null;
     this.#context.unconfigure();
     this.#gpu.destroy();
@@ -330,6 +394,57 @@ class WebGPUBackend implements Backend {
       size: Math.max(words, 1) * BYTES_PER_WORD,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
     });
+  }
+
+  #createGrid(cols: number, rows: number, wordsPerRow: number): Grid {
+    const wordCount = wordsPerRow * rows;
+    const cellCount = cols * rows;
+    const levels = Math.min(EMISSIVE_MIPS, 1 + Math.floor(Math.log2(Math.max(cols, rows, 1))));
+
+    const emissive = this.#gpu.createTexture({
+      size: { width: cols, height: rows },
+      format: EMISSIVE_FORMAT,
+      mipLevelCount: levels,
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+
+    const mips = [];
+    for (let level = 1; level < levels; level += 1) {
+      mips.push({
+        source: emissive.createView({ baseMipLevel: level - 1, mipLevelCount: 1 }),
+        target: emissive.createView({ baseMipLevel: level, mipLevelCount: 1 }),
+      });
+    }
+
+    return {
+      cols,
+      rows,
+      wordsPerRow,
+      wordCount,
+      cellCount,
+      state: [this.#storage(wordCount), this.#storage(wordCount)],
+      seed: this.#storage(wordCount),
+      strokeBase: this.#storage(wordCount),
+      strokeMask: this.#storage(wordCount),
+      fx: this.#storage(cellCount),
+      emissive,
+      emissiveView: emissive.createView({ baseMipLevel: 0, mipLevelCount: 1 }),
+      mips,
+    };
+  }
+
+  #destroyGrid(grid: Grid): void {
+    for (const buffer of [
+      grid.state[0],
+      grid.state[1],
+      grid.seed,
+      grid.strokeBase,
+      grid.strokeMask,
+      grid.fx,
+    ]) {
+      buffer.destroy();
+    }
+    grid.emissive.destroy();
   }
 
   #copyState(toSeed: boolean): void {
@@ -414,16 +529,44 @@ class WebGPUBackend implements Backend {
     const grid = this.#grid;
     if (!grid) return;
 
-    const data = new ArrayBuffer(48);
+    const { palette, glow, gridLines } = this.#visuals;
+    const data = new ArrayBuffer(96);
     const u32 = new Uint32Array(data);
     const f32 = new Float32Array(data);
+
     u32[0] = grid.cols;
     u32[1] = grid.rows;
     u32[2] = grid.wordsPerRow;
     f32[3] = this.#cellPx;
-    f32.set(ALIVE, 4);
-    f32.set(BACKGROUND, 8);
+    f32.set(palette.alive, 4);
+    f32.set(palette.bg, 8);
+    f32.set(palette.birth, 12);
+    f32.set(palette.death, 16);
+    f32[20] = glow;
+    f32[21] = gridLines && this.#cellPx >= GRID_MIN_CELL_PX ? 1 : 0;
+    f32[22] = this.#cellPx >= GEOMETRY_MIN_CELL_PX ? 1 : 0;
+    f32[23] = DEATH_SHRINK_MS / DEATH_TOTAL_MS;
+
     this.#gpu.queue.writeBuffer(this.#viewUniform, 0, data);
+  }
+
+  #writeEmissiveUniform(): void {
+    const grid = this.#grid;
+    if (!grid) return;
+
+    const { palette } = this.#visuals;
+    const data = new ArrayBuffer(64);
+    const u32 = new Uint32Array(data);
+    const f32 = new Float32Array(data);
+
+    u32[0] = grid.cols;
+    u32[1] = grid.rows;
+    u32[2] = grid.wordsPerRow;
+    f32.set(palette.alive, 4);
+    f32.set(palette.birth, 8);
+    f32.set(palette.death, 12);
+
+    this.#gpu.queue.writeBuffer(this.#emissiveUniform, 0, data);
   }
 
   #buildBindGroups(): void {
@@ -441,12 +584,38 @@ class WebGPUBackend implements Backend {
       }),
     );
 
+    this.#fxGroups = pair((front) =>
+      this.#gpu.createBindGroup({
+        layout: this.#fxPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.#fxUniform } },
+          { binding: 1, resource: { buffer: pick(grid.state, front) } },
+          { binding: 2, resource: { buffer: pick(grid.state, front ^ 1) } },
+          { binding: 3, resource: { buffer: grid.fx } },
+        ],
+      }),
+    );
+
+    this.#emissiveGroups = pair((front) =>
+      this.#gpu.createBindGroup({
+        layout: this.#emissivePipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.#emissiveUniform } },
+          { binding: 1, resource: { buffer: pick(grid.state, front) } },
+          { binding: 2, resource: { buffer: grid.fx } },
+        ],
+      }),
+    );
+
     this.#presentGroups = pair((front) =>
       this.#gpu.createBindGroup({
         layout: this.#presentPipeline.getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: { buffer: this.#viewUniform } },
           { binding: 1, resource: { buffer: pick(grid.state, front) } },
+          { binding: 2, resource: { buffer: grid.fx } },
+          { binding: 3, resource: grid.emissive.createView() },
+          { binding: 4, resource: this.#sampler },
         ],
       }),
     );
@@ -462,7 +631,32 @@ class WebGPUBackend implements Backend {
         ],
       }),
     );
+
+    this.#mipGroups = grid.mips.map((level) =>
+      this.#gpu.createBindGroup({
+        layout: this.#downsamplePipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: level.source },
+          { binding: 1, resource: this.#sampler },
+        ],
+      }),
+    );
   }
+}
+
+function fxParams(grid: Grid, deltaMs: number, stepped: boolean): ArrayBuffer {
+  const data = new ArrayBuffer(32);
+  const u32 = new Uint32Array(data);
+  const f32 = new Float32Array(data);
+
+  u32[0] = grid.cols;
+  u32[1] = grid.rows;
+  u32[2] = grid.wordsPerRow;
+  u32[3] = stepped ? 1 : 0;
+  f32[4] = deltaMs / BIRTH_MS;
+  f32[5] = deltaMs / DEATH_TOTAL_MS;
+
+  return data;
 }
 
 function clamp(value: number, min: number, max: number): number {

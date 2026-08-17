@@ -5,6 +5,7 @@ export function Readout() {
   const backend = useStore((s) => s.backend);
   const device = useStore((s) => s.device);
   const speed = useStore((s) => s.speed);
+  const visuals = useStore((s) => s.visuals);
   const stats = useStore((s) => s.stats);
   const fatal = useStore((s) => s.fatal);
 
@@ -26,11 +27,16 @@ export function Readout() {
             accent={speed.turbo}
           />
           <Row
+            label="look"
+            value={`${visuals.palette} · glow ${visuals.glow}${visuals.gridLines ? ' · grid' : ''}`}
+          />
+          <Row
             label="fps"
             value={stats ? `${stats.fps.toFixed(0)} (${stats.frameMs.toFixed(1)} ms)` : '—'}
           />
           <p className="mt-2 text-[11px] text-muted/70">
-            drag to draw · space run/draw · → step · r reset · c clear · t turbo
+            drag to draw · space run/draw · → step · r reset · c clear · t turbo · g glow · p
+            palette · l grid · ctrl+wheel cell size
           </p>
         </>
       )}

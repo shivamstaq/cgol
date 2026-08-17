@@ -20,6 +20,9 @@ export function dispatch(runtime: Runtime, command: EngineCommand): void {
     case 'rule':
       runtime.setRule(command.rule);
       break;
+    case 'visuals':
+      runtime.setVisuals(command.visuals);
+      break;
     case 'strokeStart':
       runtime.strokeStart(command.point);
       break;

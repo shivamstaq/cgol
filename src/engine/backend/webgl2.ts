@@ -1,8 +1,19 @@
-import { RULE_CONWAY } from '../defaults';
-import { ALIVE, BACKGROUND } from '../palette';
+import {
+  BIRTH_MS,
+  DEATH_SHRINK_MS,
+  DEATH_TOTAL_MS,
+  EMISSIVE_MIPS,
+  GEOMETRY_MIN_CELL_PX,
+  GLOW_STRENGTH,
+  GRID_MIN_CELL_PX,
+  RULE_CONWAY,
+} from '../defaults';
+import { PALETTES } from '../palette';
 import type { RuleSpec } from '../protocol';
 import blitFrag from '../shaders/gl/blit.frag.glsl?raw';
 import copyFrag from '../shaders/gl/copy.frag.glsl?raw';
+import emissiveFrag from '../shaders/gl/emissive.frag.glsl?raw';
+import fxFrag from '../shaders/gl/fx.frag.glsl?raw';
 import lifeFrag from '../shaders/gl/life.frag.glsl?raw';
 import presentFrag from '../shaders/gl/present.frag.glsl?raw';
 import quadVert from '../shaders/gl/quad.vert.glsl?raw';
@@ -12,6 +23,7 @@ import {
   type Backend,
   type GridSpec,
   type RenderCanvas,
+  type ResolvedVisuals,
   type StampSpec,
 } from './types';
 
@@ -20,18 +32,28 @@ interface Program {
   at(name: string): WebGLUniformLocation | null;
 }
 
+interface TextureOptions {
+  format: number;
+  levels: number;
+  linear: boolean;
+}
+
 interface Grid {
   cols: number;
   rows: number;
   wordsPerRow: number;
   state: [WebGLTexture, WebGLTexture];
   mask: [WebGLTexture, WebGLTexture];
+  fx: [WebGLTexture, WebGLTexture];
   seed: WebGLTexture;
   base: WebGLTexture;
+  emissive: WebGLTexture;
   stateFbo: [WebGLFramebuffer, WebGLFramebuffer];
   maskFbo: [WebGLFramebuffer, WebGLFramebuffer];
+  fxFbo: [WebGLFramebuffer, WebGLFramebuffer];
   seedFbo: WebGLFramebuffer;
   baseFbo: WebGLFramebuffer;
+  emissiveFbo: WebGLFramebuffer;
   /** [mask target][state target] */
   stampFbo: [[WebGLFramebuffer, WebGLFramebuffer], [WebGLFramebuffer, WebGLFramebuffer]];
 }
@@ -60,15 +82,23 @@ class WebGL2Backend implements Backend {
   readonly #stamp: Program;
   readonly #blit: Program;
   readonly #copy: Program;
+  readonly #fx: Program;
+  readonly #emissive: Program;
   readonly #present: Program;
 
   #grid: Grid | null = null;
   #front = 0;
   #maskFront = 0;
+  #fxFront = 0;
   #cellPx = 1;
   #width = 1;
   #height = 1;
   #rule: RuleSpec = RULE_CONWAY;
+  #visuals: ResolvedVisuals = {
+    palette: PALETTES.aurora,
+    glow: GLOW_STRENGTH.subtle,
+    gridLines: true,
+  };
 
   constructor(gl: WebGL2RenderingContext) {
     this.#gl = gl;
@@ -100,14 +130,39 @@ class WebGL2Backend implements Backend {
       'uDy',
     ]);
     this.#copy = program(gl, vertex, copyFrag, ['uSrc']);
+    this.#fx = program(gl, vertex, fxFrag, [
+      'uCurrent',
+      'uPrevious',
+      'uFx',
+      'uStepped',
+      'uBirthDecay',
+      'uDeathDecay',
+    ]);
+    this.#emissive = program(gl, vertex, emissiveFrag, [
+      'uState',
+      'uFx',
+      'uCols',
+      'uRows',
+      'uAlive',
+      'uBirth',
+      'uDeath',
+    ]);
     this.#present = program(gl, vertex, presentFrag, [
       'uState',
+      'uFx',
+      'uEmissive',
       'uCols',
       'uRows',
       'uCellPx',
       'uHeight',
+      'uGlow',
+      'uGrid',
+      'uGeometry',
+      'uShrink',
       'uAlive',
       'uDead',
+      'uBirth',
+      'uDeath',
     ]);
 
     this.#width = gl.drawingBufferWidth;
@@ -126,15 +181,12 @@ class WebGL2Backend implements Backend {
     const previous = this.#grid;
 
     if (previous) {
-      const dx = Math.floor((next.cols - previous.cols) / 2);
-      const dy = Math.floor((next.rows - previous.rows) / 2);
-
       gl.useProgram(this.#blit.program);
       gl.uniform1ui(this.#blit.at('uCols'), next.cols);
       gl.uniform1ui(this.#blit.at('uSrcCols'), previous.cols);
       gl.uniform1ui(this.#blit.at('uSrcRows'), previous.rows);
-      gl.uniform1i(this.#blit.at('uDx'), dx);
-      gl.uniform1i(this.#blit.at('uDy'), dy);
+      gl.uniform1i(this.#blit.at('uDx'), Math.floor((next.cols - previous.cols) / 2));
+      gl.uniform1i(this.#blit.at('uDy'), Math.floor((next.rows - previous.rows) / 2));
 
       this.#bind(0, pick(previous.state, this.#front), this.#blit.at('uSrc'));
       this.#draw(next.stateFbo[0], wordsPerRow, next.rows);
@@ -147,11 +199,16 @@ class WebGL2Backend implements Backend {
     this.#grid = next;
     this.#front = 0;
     this.#maskFront = 0;
+    this.#fxFront = 0;
     this.#cellPx = spec.cellPx;
   }
 
   setRule(rule: RuleSpec): void {
     this.#rule = rule;
+  }
+
+  setVisuals(visuals: ResolvedVisuals): void {
+    this.#visuals = visuals;
   }
 
   advance(steps: number): void {
@@ -172,16 +229,22 @@ class WebGL2Backend implements Backend {
     }
   }
 
-  render(): void {
+  render(deltaMs: number, stepped: boolean): void {
     const gl = this.#gl;
-    const [r, g, b, a] = BACKGROUND;
+    const grid = this.#grid;
+    const { palette, glow, gridLines } = this.#visuals;
 
+    if (grid) {
+      this.#updateFx(grid, deltaMs, stepped);
+      if (glow > 0) this.#updateEmissive(grid);
+    }
+
+    const [r, g, b, a] = palette.bg;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.#width, this.#height);
     gl.clearColor(r, g, b, a);
     gl.clear(gl.COLOR_BUFFER_BIT);
 
-    const grid = this.#grid;
     if (!grid) return;
 
     gl.useProgram(this.#present.program);
@@ -189,9 +252,18 @@ class WebGL2Backend implements Backend {
     gl.uniform1ui(this.#present.at('uRows'), grid.rows);
     gl.uniform1f(this.#present.at('uCellPx'), this.#cellPx);
     gl.uniform1f(this.#present.at('uHeight'), this.#height);
-    gl.uniform4fv(this.#present.at('uAlive'), ALIVE);
-    gl.uniform4fv(this.#present.at('uDead'), BACKGROUND);
+    gl.uniform1f(this.#present.at('uGlow'), glow);
+    gl.uniform1f(this.#present.at('uGrid'), gridLines && this.#cellPx >= GRID_MIN_CELL_PX ? 1 : 0);
+    gl.uniform1f(this.#present.at('uGeometry'), this.#cellPx >= GEOMETRY_MIN_CELL_PX ? 1 : 0);
+    gl.uniform1f(this.#present.at('uShrink'), DEATH_SHRINK_MS / DEATH_TOTAL_MS);
+    gl.uniform4fv(this.#present.at('uAlive'), palette.alive);
+    gl.uniform4fv(this.#present.at('uDead'), palette.bg);
+    gl.uniform4fv(this.#present.at('uBirth'), palette.birth);
+    gl.uniform4fv(this.#present.at('uDeath'), palette.death);
+
     this.#bind(0, pick(grid.state, this.#front), this.#present.at('uState'));
+    this.#bind(1, pick(grid.fx, this.#fxFront), this.#present.at('uFx'));
+    this.#bind(2, grid.emissive, this.#present.at('uEmissive'));
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
@@ -204,7 +276,7 @@ class WebGL2Backend implements Backend {
     this.#bind(0, pick(grid.state, this.#front), this.#copy.at('uSrc'));
     this.#draw(grid.baseFbo, grid.wordsPerRow, grid.rows);
 
-    for (const fbo of grid.maskFbo) this.#clearTarget(fbo);
+    for (const fbo of grid.maskFbo) this.#clearInteger(fbo);
     this.#maskFront = 0;
   }
 
@@ -245,7 +317,7 @@ class WebGL2Backend implements Backend {
   clear(): void {
     const grid = this.#grid;
     if (!grid) return;
-    this.#clearTarget(pick(grid.stateFbo, this.#front));
+    this.#clearInteger(pick(grid.stateFbo, this.#front));
   }
 
   dispose(): void {
@@ -254,14 +326,54 @@ class WebGL2Backend implements Backend {
     this.#gl.getExtension('WEBGL_lose_context')?.loseContext();
   }
 
+  #updateFx(grid: Grid, deltaMs: number, stepped: boolean): void {
+    const gl = this.#gl;
+    gl.useProgram(this.#fx.program);
+    gl.uniform1ui(this.#fx.at('uStepped'), stepped ? 1 : 0);
+    gl.uniform1f(this.#fx.at('uBirthDecay'), deltaMs / BIRTH_MS);
+    gl.uniform1f(this.#fx.at('uDeathDecay'), deltaMs / DEATH_TOTAL_MS);
+
+    this.#bind(0, pick(grid.state, this.#front), this.#fx.at('uCurrent'));
+    this.#bind(1, pick(grid.state, this.#front ^ 1), this.#fx.at('uPrevious'));
+    this.#bind(2, pick(grid.fx, this.#fxFront), this.#fx.at('uFx'));
+    this.#draw(pick(grid.fxFbo, this.#fxFront ^ 1), grid.cols, grid.rows);
+    this.#fxFront ^= 1;
+  }
+
+  #updateEmissive(grid: Grid): void {
+    const gl = this.#gl;
+    const { palette } = this.#visuals;
+
+    gl.useProgram(this.#emissive.program);
+    gl.uniform1ui(this.#emissive.at('uCols'), grid.cols);
+    gl.uniform1ui(this.#emissive.at('uRows'), grid.rows);
+    gl.uniform4fv(this.#emissive.at('uAlive'), palette.alive);
+    gl.uniform4fv(this.#emissive.at('uBirth'), palette.birth);
+    gl.uniform4fv(this.#emissive.at('uDeath'), palette.death);
+
+    this.#bind(0, pick(grid.state, this.#front), this.#emissive.at('uState'));
+    this.#bind(1, pick(grid.fx, this.#fxFront), this.#emissive.at('uFx'));
+    this.#draw(grid.emissiveFbo, grid.cols, grid.rows);
+
+    gl.bindTexture(gl.TEXTURE_2D, grid.emissive);
+    gl.generateMipmap(gl.TEXTURE_2D);
+  }
+
   #createGrid(cols: number, rows: number, wordsPerRow: number): Grid {
     const gl = this.#gl;
-    const texture = () => createTexture(gl, wordsPerRow, rows);
+    const packed = () =>
+      createTexture(gl, wordsPerRow, rows, { format: gl.R32UI, levels: 1, linear: false });
+    const cellwise = () =>
+      createTexture(gl, cols, rows, { format: gl.RGBA8, levels: 1, linear: false });
 
-    const state: [WebGLTexture, WebGLTexture] = [texture(), texture()];
-    const mask: [WebGLTexture, WebGLTexture] = [texture(), texture()];
-    const seed = texture();
-    const base = texture();
+    const levels = Math.min(EMISSIVE_MIPS, 1 + Math.floor(Math.log2(Math.max(cols, rows, 1))));
+
+    const state: [WebGLTexture, WebGLTexture] = [packed(), packed()];
+    const mask: [WebGLTexture, WebGLTexture] = [packed(), packed()];
+    const fx: [WebGLTexture, WebGLTexture] = [cellwise(), cellwise()];
+    const seed = packed();
+    const base = packed();
+    const emissive = createTexture(gl, cols, rows, { format: gl.RGBA8, levels, linear: true });
 
     const grid: Grid = {
       cols,
@@ -269,12 +381,16 @@ class WebGL2Backend implements Backend {
       wordsPerRow,
       state,
       mask,
+      fx,
       seed,
       base,
+      emissive,
       stateFbo: [createFbo(gl, [state[0]]), createFbo(gl, [state[1]])],
       maskFbo: [createFbo(gl, [mask[0]]), createFbo(gl, [mask[1]])],
+      fxFbo: [createFbo(gl, [fx[0]]), createFbo(gl, [fx[1]])],
       seedFbo: createFbo(gl, [seed]),
       baseFbo: createFbo(gl, [base]),
+      emissiveFbo: createFbo(gl, [emissive]),
       stampFbo: [
         [createFbo(gl, [mask[0], state[0]]), createFbo(gl, [mask[0], state[1]])],
         [createFbo(gl, [mask[1], state[0]]), createFbo(gl, [mask[1], state[1]])],
@@ -282,7 +398,10 @@ class WebGL2Backend implements Backend {
     };
 
     for (const fbo of [...grid.stateFbo, ...grid.maskFbo, grid.seedFbo, grid.baseFbo]) {
-      this.#clearTarget(fbo);
+      this.#clearInteger(fbo);
+    }
+    for (const fbo of [...grid.fxFbo, grid.emissiveFbo]) {
+      this.#clearFloat(fbo);
     }
 
     return grid;
@@ -290,14 +409,23 @@ class WebGL2Backend implements Backend {
 
   #destroyGrid(grid: Grid): void {
     const gl = this.#gl;
-    for (const texture of [...grid.state, ...grid.mask, grid.seed, grid.base]) {
+    for (const texture of [
+      ...grid.state,
+      ...grid.mask,
+      ...grid.fx,
+      grid.seed,
+      grid.base,
+      grid.emissive,
+    ]) {
       gl.deleteTexture(texture);
     }
     for (const fbo of [
       ...grid.stateFbo,
       ...grid.maskFbo,
+      ...grid.fxFbo,
       grid.seedFbo,
       grid.baseFbo,
+      grid.emissiveFbo,
       ...grid.stampFbo.flat(),
     ]) {
       gl.deleteFramebuffer(fbo);
@@ -310,10 +438,16 @@ class WebGL2Backend implements Backend {
     this.#draw(target, grid.wordsPerRow, grid.rows);
   }
 
-  #clearTarget(fbo: WebGLFramebuffer): void {
+  #clearInteger(fbo: WebGLFramebuffer): void {
     const gl = this.#gl;
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.clearBufferuiv(gl.COLOR, 0, new Uint32Array([0, 0, 0, 0]));
+  }
+
+  #clearFloat(fbo: WebGLFramebuffer): void {
+    const gl = this.#gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.clearBufferfv(gl.COLOR, 0, new Float32Array([0, 0, 0, 1]));
   }
 
   #bind(unit: number, texture: WebGLTexture, location: WebGLUniformLocation | null): void {
@@ -331,14 +465,32 @@ class WebGL2Backend implements Backend {
   }
 }
 
-function createTexture(gl: WebGL2RenderingContext, width: number, height: number): WebGLTexture {
+function createTexture(
+  gl: WebGL2RenderingContext,
+  width: number,
+  height: number,
+  options: TextureOptions,
+): WebGLTexture {
   const texture = must(gl.createTexture(), 'texture');
   gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R32UI, Math.max(1, width), Math.max(1, height));
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texStorage2D(
+    gl.TEXTURE_2D,
+    options.levels,
+    options.format,
+    Math.max(1, width),
+    Math.max(1, height),
+  );
+
+  const minFilter = options.linear
+    ? options.levels > 1
+      ? gl.LINEAR_MIPMAP_LINEAR
+      : gl.LINEAR
+    : gl.NEAREST;
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, minFilter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, options.linear ? gl.LINEAR : gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
   return texture;
 }
 

@@ -1,4 +1,7 @@
+import type { PaletteName } from './palette';
+
 export type BackendKind = 'webgpu' | 'webgl2';
+export type GlowLevel = 'off' | 'subtle' | 'full';
 export type Mode = 'drawing' | 'running';
 export type BrushShape = 'circle' | 'square';
 
@@ -23,6 +26,12 @@ export interface BrushSpec {
 export interface SpeedSpec {
   generationsPerSecond: number;
   turbo: boolean;
+}
+
+export interface VisualSpec {
+  palette: PaletteName;
+  glow: GlowLevel;
+  gridLines: boolean;
 }
 
 export interface RuleSpec {
@@ -53,6 +62,7 @@ export type MainToEngine =
   | { type: 'speed'; speed: SpeedSpec }
   | { type: 'brush'; brush: BrushSpec }
   | { type: 'rule'; rule: RuleSpec }
+  | { type: 'visuals'; visuals: VisualSpec }
   | { type: 'strokeStart'; point: Point }
   | { type: 'strokeMove'; points: Point[] }
   | { type: 'strokeEnd' }

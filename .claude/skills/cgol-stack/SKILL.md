@@ -63,6 +63,11 @@ Verified 2026-08-17 against primary docs. Stack decisions live in `SPEC.md`; ver
 - Reconfigure the context after any canvas resize.
 - No `generateMipmap`; mip levels require manual blit passes.
 - Handle `device.lost` and the canvas `contextlost` event (mobile memory pressure).
+- Add an `uncapturederror` listener; without it, validation failures silently skip draws.
+- Storage textures accept only a fixed format list — `rg8unorm` is NOT among them. Use a storage
+  buffer or `rgba8unorm` for read-write per-cell data.
+- Storage textures are write-only unless the read-write extension applies, so read-modify-write
+  either ping-pongs textures or uses a storage buffer.
 - Requires Chromium 113+ / Firefox 141+.
 
 ## WebGL2

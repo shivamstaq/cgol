@@ -32,5 +32,17 @@ export const TURBO_STEPS_MIN = 1;
 export const TURBO_STEPS_MAX = 4096;
 export const TURBO_STEPS_START = 32;
 
+/** FX lifetimes in milliseconds. */
+export const BIRTH_MS = 120;
+export const DEATH_SHRINK_MS = 250;
+export const DEATH_TOTAL_MS = 600;
+
+/** Geometry animation and grid lines switch off below these cell sizes, device pixels. */
+export const GEOMETRY_MIN_CELL_PX = 4;
+export const GRID_MIN_CELL_PX = 10;
+
+export const GLOW_STRENGTH = { off: 0, subtle: 0.45, full: 0.95 };
+export const EMISSIVE_MIPS = 3;
+
 /** Neighbour-count bitmasks, bit k = count k. */
 export const RULE_CONWAY = { birth: 1 << 3, survive: (1 << 2) | (1 << 3) };

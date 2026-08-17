@@ -1,9 +1,10 @@
-import type { Backend, GridSpec, RenderCanvas } from './backend/types';
+import type { Backend, GridSpec, RenderCanvas, ResolvedVisuals } from './backend/types';
 import { createWebGL2Backend } from './backend/webgl2';
 import { createWebGPUBackend } from './backend/webgpu';
 import {
   BRUSH_SCATTER_DEFAULT,
   BRUSH_SIZE_DEFAULT,
+  GLOW_STRENGTH,
   MAX_CATCHUP_STEPS,
   MAX_DPR,
   MAX_FRAME_DELTA_MS,
@@ -19,6 +20,7 @@ import {
   TURBO_STEPS_MIN,
   TURBO_STEPS_START,
 } from './defaults';
+import { PALETTES } from './palette';
 import type {
   BackendKind,
   BrushSpec,
@@ -28,6 +30,7 @@ import type {
   RuleSpec,
   SpeedSpec,
   ViewportSpec,
+  VisualSpec,
 } from './protocol';
 
 type Emit = (message: EngineToMain) => void;
@@ -49,6 +52,7 @@ export class Runtime {
     scatter: BRUSH_SCATTER_DEFAULT,
   };
   #rule: RuleSpec = RULE_CONWAY;
+  #visuals: VisualSpec = { palette: 'aurora', glow: 'subtle', gridLines: true };
 
   #accumulator = 0;
   #turboSteps = TURBO_STEPS_START;
@@ -89,6 +93,7 @@ export class Runtime {
 
     this.#backend = backend;
     backend.setRule(this.#rule);
+    backend.setVisuals(resolveVisuals(this.#visuals));
     this.#applyViewport(viewport);
     this.#grid = gridFor(viewport);
     backend.allocate(this.#grid);
@@ -138,6 +143,11 @@ export class Runtime {
   setRule(rule: RuleSpec): void {
     this.#rule = rule;
     this.#backend?.setRule(rule);
+  }
+
+  setVisuals(visuals: VisualSpec): void {
+    this.#visuals = visuals;
+    this.#backend?.setVisuals(resolveVisuals(visuals));
   }
 
   strokeStart(point: Point): void {
@@ -225,6 +235,7 @@ export class Runtime {
 
     this.#grid = gridFor(viewport);
     backend.allocate(this.#grid);
+    backend.setVisuals(resolveVisuals(this.#visuals));
 
     if (this.#strokeActive) {
       backend.beginStroke();
@@ -292,16 +303,18 @@ export class Runtime {
     }
     this.#lastFrameAt = now;
 
+    let stepped = false;
     if (this.#mode === 'running' && backend.simulates) {
       const steps = this.#pendingSteps(Math.min(raw, MAX_FRAME_DELTA_MS));
       if (steps > 0) {
         backend.advance(steps);
         this.#generation += steps;
         this.#steps += steps;
+        stepped = true;
       }
     }
 
-    backend.render();
+    backend.render(Math.min(raw, MAX_FRAME_DELTA_MS), stepped);
 
     if (now - this.#statsAt >= STATS_INTERVAL_MS) {
       this.#pushStats(now);
@@ -334,6 +347,14 @@ export class Runtime {
       },
     });
   }
+}
+
+function resolveVisuals(visuals: VisualSpec): ResolvedVisuals {
+  return {
+    palette: PALETTES[visuals.palette],
+    glow: GLOW_STRENGTH[visuals.glow],
+    gridLines: visuals.gridLines,
+  };
 }
 
 function gridFor(viewport: ViewportSpec): GridSpec {

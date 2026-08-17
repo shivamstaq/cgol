@@ -1,19 +1,25 @@
 import { useEffect, useRef } from 'react';
+import { PALETTE_NAMES } from './engine/palette';
 import { createEngine, type EngineHandle } from './engine/client';
-import type { EngineToMain, Point } from './engine/protocol';
+import type { EngineToMain, Point, VisualSpec } from './engine/protocol';
 import {
   forceInline,
   preferredBackend,
   readViewport,
   watchDevicePixelRatio,
 } from './engine/viewport';
+import type { GlowLevel } from './engine/protocol';
 import { useStore } from './store/store';
 import { Readout } from './ui/Readout';
+import { applyPalette } from './ui/theme';
+
+const GLOW_CYCLE: GlowLevel[] = ['off', 'subtle', 'full'];
 
 export function App() {
   const hostRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<EngineHandle | null>(null);
   const cellSize = useStore((s) => s.cellSize);
+  const palette = useStore((s) => s.visuals.palette);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -60,6 +66,14 @@ export function App() {
       engine.send({ type: 'strokeEnd' });
     };
 
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      const store = useStore.getState();
+      store.setCellSize(store.cellSize + (event.deltaY < 0 ? 1 : -1));
+    };
+
+    canvas.addEventListener('wheel', onWheel, { passive: false });
     canvas.addEventListener('pointerdown', onPointerDown);
     canvas.addEventListener('pointermove', onPointerMove);
     canvas.addEventListener('pointerup', onPointerUp);
@@ -92,12 +106,31 @@ export function App() {
           engine.send({ type: 'speed', speed: next });
           break;
         }
+        case 'g':
+          cycleVisuals(engine, (visuals) => ({
+            ...visuals,
+            glow:
+              GLOW_CYCLE[(GLOW_CYCLE.indexOf(visuals.glow) + 1) % GLOW_CYCLE.length] ?? 'subtle',
+          }));
+          break;
+        case 'p':
+          cycleVisuals(engine, (visuals) => ({
+            ...visuals,
+            palette:
+              PALETTE_NAMES[(PALETTE_NAMES.indexOf(visuals.palette) + 1) % PALETTE_NAMES.length] ??
+              'aurora',
+          }));
+          break;
+        case 'l':
+          cycleVisuals(engine, (visuals) => ({ ...visuals, gridLines: !visuals.gridLines }));
+          break;
       }
     };
 
     window.addEventListener('keydown', onKeyDown);
 
     return () => {
+      canvas.removeEventListener('wheel', onWheel);
       observer.disconnect();
       unwatchDpr();
       window.removeEventListener('keydown', onKeyDown);
@@ -114,12 +147,22 @@ export function App() {
     }
   }, [cellSize]);
 
+  useEffect(() => {
+    applyPalette(palette);
+  }, [palette]);
+
   return (
     <main className="relative h-full w-full bg-bg">
       <div ref={hostRef} className="absolute inset-0" />
       <Readout />
     </main>
   );
+}
+
+function cycleVisuals(engine: EngineHandle, next: (visuals: VisualSpec) => VisualSpec): void {
+  const visuals = next(useStore.getState().visuals);
+  useStore.getState().setVisuals(visuals);
+  engine.send({ type: 'visuals', visuals });
 }
 
 function handleEngineEvent(event: EngineToMain): void {
